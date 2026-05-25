@@ -19,7 +19,7 @@ COPY --from=builder /opt/app-root/caddy /usr/bin/caddy
 COPY LICENSE /licenses/
 
 LABEL name="Konflux Reverse Proxy"
-LABEL vendor="Konflux CI"
+LABEL vendor="Red Hat, Inc."
 LABEL version="0.1.0"
 LABEL release="1"
 LABEL summary="Custom Caddy reverse proxy for Konflux"
