@@ -58,6 +58,15 @@ docker-build: ## Build container image.
 docker-push: ## Push container image.
 	$(CONTAINER_TOOL) push $(IMG)
 
+KIND_CLUSTER ?= konflux
+
+.PHONY: kind-load
+kind-load: docker-build ## Build and load image into a Kind cluster.
+	dir=$$(mktemp -d) && \
+	$(CONTAINER_TOOL) save $(IMG) -o $${dir}/reverse-proxy.tar && \
+	kind load image-archive $${dir}/reverse-proxy.tar --name $(KIND_CLUSTER) && \
+	rm -r $${dir}
+
 PLATFORMS ?= linux/arm64,linux/amd64
 .PHONY: docker-buildx
 docker-buildx: ## Build and push multi-arch container image.
