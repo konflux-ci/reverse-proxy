@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 IMG="${IMG:-localhost/konflux-ci/reverse-proxy:local}"
-ORIG_IMG="${ORIG_IMG:-registry.access.redhat.com/hi/caddy}"
+ORIG_IMG="${ORIG_IMG:-quay.io/konflux-ci/reverse-proxy}"
 KIND_CLUSTER="${KIND_CLUSTER:-konflux}"
 KONFLUX_CI_DIR="${KONFLUX_CI_DIR:-${REPO_ROOT}/../konflux-ci}"
 log() { echo "==> $*"; }
