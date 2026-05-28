@@ -39,13 +39,16 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/fsnotify/fsnotify"
 	"go.uber.org/zap"
 )
 
 func init() {
 	caddy.RegisterModule(new(App))
+	httpcaddyfile.RegisterGlobalOption("file_watcher", parseGlobalOption)
 }
 
 // App is a Caddy app module that provides two file-watching behaviors:
@@ -450,6 +453,17 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	}
 
 	return nil
+}
+
+func parseGlobalOption(d *caddyfile.Dispenser, existingVal interface{}) (interface{}, error) {
+	app := new(App)
+	if err := app.UnmarshalCaddyfile(d); err != nil {
+		return nil, err
+	}
+	return httpcaddyfile.App{
+		Name:  "file_watcher",
+		Value: caddyconfig.JSON(app, nil),
+	}, nil
 }
 
 var (

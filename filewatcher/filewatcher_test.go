@@ -1,6 +1,7 @@
 package filewatcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/onsi/gomega"
 	"go.uber.org/zap"
 )
@@ -359,4 +362,48 @@ func TestCacheOnlyAppNeedsNoWatch(t *testing.T) {
 	val, ok := app.GetValue("tok")
 	g.Expect(ok).To(gomega.BeTrue())
 	g.Expect(val).To(gomega.Equal("val"))
+}
+
+func TestParseGlobalOption(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		watch /mnt/ca-bundle
+		cache kube_token /var/run/secrets/token
+		debounce 3s
+		poll 15s
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult, ok := result.(httpcaddyfile.App)
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(appResult.Name).To(gomega.Equal("file_watcher"))
+
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+	g.Expect(parsed.Watch).To(gomega.Equal([]string{"/mnt/ca-bundle"}))
+	g.Expect(parsed.Cache).To(gomega.HaveKeyWithValue("kube_token", "/var/run/secrets/token"))
+	g.Expect(parsed.Debounce).To(gomega.Equal(caddy.Duration(3 * time.Second)))
+	g.Expect(parsed.Poll).To(gomega.Equal(caddy.Duration(15 * time.Second)))
+}
+
+func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		watch /mnt/ca
+		poll 0
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+	g.Expect(time.Duration(parsed.Poll)).To(gomega.BeNumerically("<", 0))
 }
