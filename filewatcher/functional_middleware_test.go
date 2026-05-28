@@ -32,7 +32,7 @@ func freePortForMiddleware(t *testing.T) int {
 // TestMiddlewareFunctionalCaddyfile starts a full Caddy server configured via
 // Caddyfile with:
 //   - file_watcher global option caching a token file
-//   - inject_watched_files middleware injecting {http.vars.kube_token}
+//   - inject_cached_vars middleware injecting {http.vars.kube_token}
 //   - reverse_proxy using header_up with the injected var
 //
 // It verifies that:
@@ -59,7 +59,7 @@ func TestMiddlewareFunctionalCaddyfile(t *testing.T) {
 
 	caddyfileContent := fmt.Sprintf(`{
 	admin 127.0.0.1:%d
-	order inject_watched_files before reverse_proxy
+	order inject_cached_vars before reverse_proxy
 	file_watcher {
 		cache kube_token %s
 		poll 100ms
@@ -68,7 +68,7 @@ func TestMiddlewareFunctionalCaddyfile(t *testing.T) {
 
 :%d {
 	route {
-		inject_watched_files
+		inject_cached_vars
 		reverse_proxy %s {
 			header_up Authorization "Bearer {http.vars.kube_token}"
 		}

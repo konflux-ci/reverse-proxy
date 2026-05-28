@@ -12,7 +12,7 @@ import (
 
 func init() {
 	caddy.RegisterModule(Middleware{})
-	httpcaddyfile.RegisterHandlerDirective("inject_watched_files", parseCaddyfileMiddleware)
+	httpcaddyfile.RegisterHandlerDirective("inject_cached_vars", parseCaddyfileMiddleware)
 }
 
 // Middleware is an HTTP handler that injects all cached file values from the
@@ -25,7 +25,7 @@ type Middleware struct {
 // CaddyModule returns the Caddy module information.
 func (Middleware) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.inject_watched_files",
+		ID:  "http.handlers.inject_cached_vars",
 		New: func() caddy.Module { return new(Middleware) },
 	}
 }
@@ -55,7 +55,7 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next cadd
 	return next.ServeHTTP(w, r)
 }
 
-// UnmarshalCaddyfile parses the inject_watched_files directive (no arguments).
+// UnmarshalCaddyfile parses the inject_cached_vars directive (no arguments).
 func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // consume directive name
 	return nil

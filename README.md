@@ -28,7 +28,7 @@ to handle each type optimally:
 
 | What changes | Frequency | Mechanism | Plugin | Reload? |
 |---|---|---|---|---|
-| Bearer tokens | Every 600s | atomic cache + `inject_watched_files` | `filewatcher` | No |
+| Bearer tokens | Every 600s | atomic cache + `inject_cached_vars` | `filewatcher` | No |
 | Serving TLS cert | Every 60–90 days | `get_certificate` module | `certwatcher` | No |
 | CA trust bundles | Rare (months/years) | fsnotify + SIGUSR1 | `filewatcher` | Yes (seamless) |
 
@@ -72,7 +72,7 @@ fsnotify with a periodic poll fallback for Kubernetes symlink rotations.
 │    → certwatcher.GetCertificate() returns latest cert        │
 │                                                              │
 │  Upstream request:                                           │
-│    → inject_watched_files sets {http.vars.*} from cache      │
+│    → inject_cached_vars sets {http.vars.*} from cache         │
 │    → header_up uses {http.vars.kube_token}                   │
 │    → transport uses tls_trust_pool (re-read on SIGUSR1)      │
 └─────────────────────────────────────────────────────────────┘
@@ -188,7 +188,7 @@ Caddy app module (`file_watcher`) with two behaviors:
 
 2. **Cache file content** — reads files into `atomic.Pointer[string]` values,
    updated instantly via fsnotify with a 10s poll fallback. Zero allocations per
-   request. Use with `inject_watched_files` middleware for token injection.
+   request. Use with `inject_cached_vars` middleware for token injection.
 
 #### Caddyfile syntax
 
@@ -207,7 +207,7 @@ Caddy app module (`file_watcher`) with two behaviors:
 }
 
 route {
-    inject_watched_files
+    inject_cached_vars
     reverse_proxy https://kubernetes.default.svc {
         header_up Authorization "Bearer {http.vars.kube_token}"
     }
