@@ -7,7 +7,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/onsi/ginkgo/v2 v2.29.0
 	github.com/onsi/gomega v1.41.0
-	go.uber.org/zap v1.27.1
+	go.uber.org/zap v1.28.0
 )
 
 require (
