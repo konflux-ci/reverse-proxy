@@ -247,7 +247,10 @@ func (fw *FileWatcher) runWatcher(watcher *fsnotify.Watcher) bool {
 			if err := fw.loadCert(); err != nil {
 				fw.logger.Error("failed to reload certificate", zap.Error(err))
 			} else {
-				fw.logger.Info("certificate reloaded successfully")
+				fw.logger.Info("certificate reloaded",
+					zap.String("cert", fw.CertFile),
+					zap.String("key", fw.KeyFile),
+					zap.String("trigger", "fsnotify"))
 			}
 		}
 	}
@@ -265,7 +268,10 @@ func (fw *FileWatcher) pollLoop() {
 			if err := fw.loadCert(); err != nil {
 				fw.logger.Warn("poll: failed to reload certificate", zap.Error(err))
 			} else {
-				fw.logger.Debug("poll: certificate reloaded")
+				fw.logger.Info("certificate reloaded",
+					zap.String("cert", fw.CertFile),
+					zap.String("key", fw.KeyFile),
+					zap.String("trigger", "poll"))
 			}
 		}
 	}
