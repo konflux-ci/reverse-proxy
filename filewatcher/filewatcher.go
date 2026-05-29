@@ -224,13 +224,19 @@ func (a *App) loadFile(name, path string) error {
 	return nil
 }
 
-func (a *App) reloadAllCached() {
+func (a *App) reloadAllCached(trigger string) {
 	for name, path := range a.Cache {
 		if err := a.loadFile(name, path); err != nil {
 			a.logger.Warn("failed to reload cached file",
 				zap.String("name", name),
 				zap.String("path", path),
+				zap.String("trigger", trigger),
 				zap.Error(err))
+		} else {
+			a.logger.Info("cached file reloaded",
+				zap.String("name", name),
+				zap.String("path", path),
+				zap.String("trigger", trigger))
 		}
 	}
 }
@@ -347,8 +353,7 @@ func (a *App) runWatcher(watcher *fsnotify.Watcher) bool {
 			a.logger.Debug("fsnotify event", zap.String("event", event.String()))
 
 			if len(a.Cache) > 0 && a.isCacheEvent(event.Name) {
-				a.reloadAllCached()
-				a.logger.Debug("cache files reloaded due to fsnotify event")
+				a.reloadAllCached("fsnotify")
 			}
 
 			// SIGUSR1 for watch paths uses debounce — only trigger for events
@@ -389,7 +394,7 @@ func (a *App) pollLoop() {
 		case <-a.stop:
 			return
 		case <-ticker.C:
-			a.reloadAllCached()
+			a.reloadAllCached("poll")
 		}
 	}
 }
