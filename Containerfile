@@ -13,7 +13,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -a -o /opt/app-root/caddy ./cmd/caddy && \
     go test ./...
 
-FROM registry.access.redhat.com/ubi10/ubi-minimal@sha256:5a1acbfad56de537f978184e662a02ba8141d82a3ce0d2aca183bfad812b0ea7
+# Minimal runtime for statically compiled binaries (Go/Rust/C/C++).
+# Includes only CA certs, timezone data, and a non-root user.
+# No shell, package manager, or C library is included.
+FROM registry.access.redhat.com/hi/static@sha256:fd656bfe76668436037b6095bfc921638ba2b2842604cfd50b8d6f27ff4cefaf
 WORKDIR /
 COPY --from=builder /opt/app-root/caddy /usr/bin/caddy
 COPY LICENSE /licenses/
