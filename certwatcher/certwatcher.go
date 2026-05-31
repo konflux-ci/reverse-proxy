@@ -28,6 +28,7 @@
 package certwatcher
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -99,7 +100,7 @@ func (fw *FileWatcher) Provision(ctx caddy.Context) error {
 		fw.Poll = caddy.Duration(5 * time.Minute)
 	}
 
-	if err := fw.loadCert(); err != nil {
+	if _, err := fw.loadCert(); err != nil {
 		return fmt.Errorf("loading initial certificate: %v", err)
 	}
 
@@ -133,13 +134,38 @@ func (fw *FileWatcher) Cleanup() error {
 	return nil
 }
 
-func (fw *FileWatcher) loadCert() error {
+// loadCert reads the certificate and key from disk. It always stores the
+// freshly loaded keypair (so key-only rotations are picked up) and returns
+// true if the certificate chain bytes differ from the previous load.
+//
+// Atomicity: reading the cert and key files is not itself atomic, but in
+// Kubernetes projected volumes both files resolve through a single ..data
+// symlink that the kubelet swaps atomically, so they always change together.
+// As a defense-in-depth, tls.LoadX509KeyPair validates that the cert and key
+// match; a mismatch (from a hypothetical partial rotation) returns an error,
+// leaving the previous valid keypair in the atomic.Pointer to continue serving.
+// The debounce timer further reduces the chance of reading mid-rotation.
+func (fw *FileWatcher) loadCert() (changed bool, err error) {
 	cert, err := tls.LoadX509KeyPair(fw.CertFile, fw.KeyFile)
 	if err != nil {
-		return err
+		return false, err
 	}
+	prev := fw.cert.Load()
+	changed = prev == nil || !certsEqual(prev, &cert)
 	fw.cert.Store(&cert)
-	return nil
+	return changed, nil
+}
+
+func certsEqual(a, b *tls.Certificate) bool {
+	if len(a.Certificate) != len(b.Certificate) {
+		return false
+	}
+	for i := range a.Certificate {
+		if !bytes.Equal(a.Certificate[i], b.Certificate[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (fw *FileWatcher) createWatcher() (*fsnotify.Watcher, error) {
@@ -244,9 +270,10 @@ func (fw *FileWatcher) runWatcher(watcher *fsnotify.Watcher) bool {
 			fw.logger.Error("fsnotify error", zap.Error(err))
 
 		case <-debounceCh:
-			if err := fw.loadCert(); err != nil {
+			changed, err := fw.loadCert()
+			if err != nil {
 				fw.logger.Error("failed to reload certificate", zap.Error(err))
-			} else {
+			} else if changed {
 				fw.logger.Info("certificate reloaded",
 					zap.String("cert", fw.CertFile),
 					zap.String("key", fw.KeyFile),
@@ -265,9 +292,10 @@ func (fw *FileWatcher) pollLoop() {
 		case <-fw.stop:
 			return
 		case <-ticker.C:
-			if err := fw.loadCert(); err != nil {
+			changed, err := fw.loadCert()
+			if err != nil {
 				fw.logger.Warn("poll: failed to reload certificate", zap.Error(err))
-			} else {
+			} else if changed {
 				fw.logger.Info("certificate reloaded",
 					zap.String("cert", fw.CertFile),
 					zap.String("key", fw.KeyFile),

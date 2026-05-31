@@ -260,7 +260,8 @@ func TestCacheUpdateOnFileChange(t *testing.T) {
 	g.Expect(os.WriteFile(tokenPath, []byte("original"), 0644)).To(gomega.Succeed())
 
 	app := newTestAppWithCache(t, map[string]string{"tok": tokenPath})
-	g.Expect(app.loadFile("tok", tokenPath)).To(gomega.Succeed())
+	_, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	g.Expect(app.Start()).To(gomega.Succeed())
 	defer app.Stop() //nolint:errcheck
@@ -284,7 +285,8 @@ func TestCachePollFallback(t *testing.T) {
 
 	app := newTestAppWithCache(t, map[string]string{"tok": tokenPath})
 	app.Poll = caddy.Duration(100 * time.Millisecond)
-	g.Expect(app.loadFile("tok", tokenPath)).To(gomega.Succeed())
+	_, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// Start only the poll loop (simulates missed fsnotify event)
 	go app.pollLoop()
@@ -321,7 +323,8 @@ func TestKubernetesSymlinkRotation(t *testing.T) {
 	g.Expect(os.Symlink(filepath.Join("..data", "token"), tokenLink)).To(gomega.Succeed())
 
 	app := newTestAppWithCache(t, map[string]string{"tok": tokenLink})
-	g.Expect(app.loadFile("tok", tokenLink)).To(gomega.Succeed())
+	_, err := app.loadFile("tok", tokenLink)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	g.Expect(app.Start()).To(gomega.Succeed())
 	defer app.Stop() //nolint:errcheck
@@ -388,6 +391,32 @@ func TestParseGlobalOption(t *testing.T) {
 	g.Expect(parsed.Cache).To(gomega.HaveKeyWithValue("kube_token", "/var/run/secrets/token"))
 	g.Expect(parsed.Debounce).To(gomega.Equal(caddy.Duration(3 * time.Second)))
 	g.Expect(parsed.Poll).To(gomega.Equal(caddy.Duration(15 * time.Second)))
+}
+
+func TestLoadFileChangedReturnValue(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("secret-v1"), 0644)).To(gomega.Succeed())
+
+	app := newTestAppWithCache(t, map[string]string{"tok": tokenPath})
+
+	// First load always reports changed.
+	changed, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeTrue())
+
+	// Reload with same content reports no change.
+	changed, err = app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeFalse())
+
+	// Modify the file, reload reports changed.
+	g.Expect(os.WriteFile(tokenPath, []byte("secret-v2"), 0644)).To(gomega.Succeed())
+	changed, err = app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeTrue())
 }
 
 func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
