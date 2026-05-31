@@ -118,7 +118,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 	for name, path := range a.Cache {
 		ptr := &atomic.Pointer[string]{}
 		a.values[name] = ptr
-		if err := a.loadFile(name, path); err != nil {
+		if _, err := a.loadFile(name, path); err != nil {
 			return fmt.Errorf("loading cached file %q (%s): %v", name, path, err)
 		}
 	}
@@ -204,35 +204,41 @@ func (a *App) GetAll() map[string]string {
 
 const maxCacheFileSize = 1 << 20 // 1 MB
 
-func (a *App) loadFile(name, path string) error {
+// loadFile reads the file at path into the cache. It returns true if the
+// content changed compared to the previously cached value.
+func (a *App) loadFile(name, path string) (changed bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close() //nolint:errcheck
 
 	data, err := io.ReadAll(io.LimitReader(f, maxCacheFileSize+1))
 	if err != nil {
-		return err
+		return false, err
 	}
 	if int64(len(data)) > maxCacheFileSize {
-		return fmt.Errorf("file %s exceeds maximum %d bytes", path, maxCacheFileSize)
+		return false, fmt.Errorf("file %s exceeds maximum %d bytes", path, maxCacheFileSize)
 	}
 
 	content := strings.TrimRight(string(data), "\n")
+	if prev := a.values[name].Load(); prev != nil && *prev == content {
+		return false, nil
+	}
 	a.values[name].Store(&content)
-	return nil
+	return true, nil
 }
 
 func (a *App) reloadAllCached(trigger string) {
 	for name, path := range a.Cache {
-		if err := a.loadFile(name, path); err != nil {
+		changed, err := a.loadFile(name, path)
+		if err != nil {
 			a.logger.Warn("failed to reload cached file",
 				zap.String("name", name),
 				zap.String("path", path),
 				zap.String("trigger", trigger),
 				zap.Error(err))
-		} else {
+		} else if changed {
 			a.logger.Info("cached file reloaded",
 				zap.String("name", name),
 				zap.String("path", path),

@@ -98,7 +98,8 @@ func TestLoadAndServeCertificate(t *testing.T) {
 		KeyFile:  filepath.Join(dir, "tls.key"),
 	}
 
-	g.Expect(fw.loadCert()).To(gomega.Succeed())
+	_, err := fw.loadCert()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	cert, err := fw.GetCertificate(context.Background(), &tls.ClientHelloInfo{})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -129,7 +130,8 @@ func TestCertRotationPickedUp(t *testing.T) {
 		stop:     make(chan struct{}),
 	}
 
-	g.Expect(fw.loadCert()).To(gomega.Succeed())
+	_, err := fw.loadCert()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	cert, _ := fw.GetCertificate(context.Background(), &tls.ClientHelloInfo{})
 	parsed, _ := x509.ParseCertificate(cert.Certificate[0])
@@ -137,11 +139,40 @@ func TestCertRotationPickedUp(t *testing.T) {
 
 	// Simulate cert rotation
 	writeCert(t, dir, "rotated.example.com")
-	g.Expect(fw.loadCert()).To(gomega.Succeed())
+	_, err = fw.loadCert()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	cert, _ = fw.GetCertificate(context.Background(), &tls.ClientHelloInfo{})
 	parsed, _ = x509.ParseCertificate(cert.Certificate[0])
 	g.Expect(parsed.Subject.CommonName).To(gomega.Equal("rotated.example.com"))
+}
+
+func TestLoadCertChangedReturnValue(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	writeCert(t, dir, "test.example.com")
+
+	fw := &FileWatcher{
+		CertFile: filepath.Join(dir, "tls.crt"),
+		KeyFile:  filepath.Join(dir, "tls.key"),
+	}
+
+	// First load always reports changed (no previous cert).
+	changed, err := fw.loadCert()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeTrue())
+
+	// Reload with same cert reports no change.
+	changed, err = fw.loadCert()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeFalse())
+
+	// Rotate the cert, reload reports changed.
+	writeCert(t, dir, "rotated.example.com")
+	changed, err = fw.loadCert()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(changed).To(gomega.BeTrue())
 }
 
 func TestUniqueDirs(t *testing.T) {
