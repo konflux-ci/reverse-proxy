@@ -3,7 +3,6 @@
   "gomod": {
     "packageRules": [
       {
-        "matchManagers": ["gomod"],
         "matchDepTypes": ["indirect"],
         "enabled": false
       }
