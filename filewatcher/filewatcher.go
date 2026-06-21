@@ -28,6 +28,7 @@
 package filewatcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -59,9 +60,9 @@ type App struct {
 	// Directories to watch for changes that trigger SIGUSR1.
 	Watch []string `json:"watch,omitempty"`
 
-	// Files to cache in memory. Map of logical name to file path.
+	// Files to cache in memory. Map of logical name to cache entry.
 	// Values are accessible via GetValue/GetAll from the middleware.
-	Cache map[string]string `json:"cache,omitempty"`
+	Cache map[string]*CacheEntry `json:"cache,omitempty"`
 
 	// How long to wait after the last filesystem event before sending SIGUSR1.
 	// Only applies to watch paths, not cache paths (cache updates are instant).
@@ -82,6 +83,31 @@ type App struct {
 
 	// signalFn sends the reload signal. Overridable for testing.
 	signalFn func() error
+}
+
+// CacheEntry defines a single cached file with optional default behavior.
+// When Default is nil the file is required (Caddy fails to start if missing).
+// When Default is non-nil the value is used when the file does not exist.
+type CacheEntry struct {
+	Path    string  `json:"path"`
+	Default *string `json:"default,omitempty"`
+}
+
+func (e *CacheEntry) UnmarshalJSON(data []byte) error {
+	// Backward compat: accept a bare string as a required entry.
+	var path string
+	if err := json.Unmarshal(data, &path); err == nil {
+		e.Path = path
+		return nil
+	}
+
+	type alias CacheEntry
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*e = CacheEntry(a)
+	return nil
 }
 
 // CaddyModule returns the Caddy module information.
@@ -115,11 +141,11 @@ func (a *App) Provision(ctx caddy.Context) error {
 
 	// Initialize cache values
 	a.values = make(map[string]*atomic.Pointer[string], len(a.Cache))
-	for name, path := range a.Cache {
+	for name, entry := range a.Cache {
 		ptr := &atomic.Pointer[string]{}
 		a.values[name] = ptr
-		if _, err := a.loadFile(name, path); err != nil {
-			return fmt.Errorf("loading cached file %q (%s): %v", name, path, err)
+		if _, err := a.loadFile(name, entry.Path); err != nil {
+			return fmt.Errorf("loading cached file %q (%s): %v", name, entry.Path, err)
 		}
 	}
 
@@ -230,18 +256,18 @@ func (a *App) loadFile(name, path string) (changed bool, err error) {
 }
 
 func (a *App) reloadAllCached(trigger string) {
-	for name, path := range a.Cache {
-		changed, err := a.loadFile(name, path)
+	for name, entry := range a.Cache {
+		changed, err := a.loadFile(name, entry.Path)
 		if err != nil {
 			a.logger.Warn("failed to reload cached file",
 				zap.String("name", name),
-				zap.String("path", path),
+				zap.String("path", entry.Path),
 				zap.String("trigger", trigger),
 				zap.Error(err))
 		} else if changed {
 			a.logger.Info("cached file reloaded",
 				zap.String("name", name),
-				zap.String("path", path),
+				zap.String("path", entry.Path),
 				zap.String("trigger", trigger))
 		}
 	}
@@ -250,8 +276,8 @@ func (a *App) reloadAllCached(trigger string) {
 func (a *App) cacheParentDirs() []string {
 	seen := make(map[string]struct{})
 	var dirs []string
-	for _, path := range a.Cache {
-		dir := filepath.Dir(path)
+	for _, entry := range a.Cache {
+		dir := filepath.Dir(entry.Path)
 		if _, ok := seen[dir]; !ok {
 			seen[dir] = struct{}{}
 			dirs = append(dirs, dir)
@@ -275,8 +301,8 @@ func (a *App) cacheParentDirs() []string {
 // directory that contains one of the cached files.
 func (a *App) isCacheEvent(eventPath string) bool {
 	eventDir := filepath.Dir(eventPath)
-	for _, path := range a.Cache {
-		if filepath.Dir(path) == eventDir {
+	for _, entry := range a.Cache {
+		if filepath.Dir(entry.Path) == eventDir {
 			return true
 		}
 	}
@@ -433,9 +459,9 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			path := d.Val()
 			if a.Cache == nil {
-				a.Cache = make(map[string]string)
+				a.Cache = make(map[string]*CacheEntry)
 			}
-			a.Cache[name] = path
+			a.Cache[name] = &CacheEntry{Path: path}
 		case "debounce":
 			if !d.NextArg() {
 				return d.ArgErr()
