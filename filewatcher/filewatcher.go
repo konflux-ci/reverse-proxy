@@ -461,7 +461,24 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if a.Cache == nil {
 				a.Cache = make(map[string]*CacheEntry)
 			}
-			a.Cache[name] = &CacheEntry{Path: path}
+			entry := &CacheEntry{Path: path}
+			for d.NextBlock(1) {
+				switch d.Val() {
+				case "default":
+					if !d.NextArg() {
+						return d.ArgErr()
+					}
+					defVal := d.Val()
+					entry.Default = &defVal
+			case "required":
+				if d.NextArg() {
+					return d.Errf("'required' takes no arguments")
+				}
+				default:
+					return d.Errf("unrecognized cache option: %s", d.Val())
+				}
+			}
+			a.Cache[name] = entry
 		case "debounce":
 			if !d.NextArg() {
 				return d.ArgErr()

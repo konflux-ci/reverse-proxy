@@ -420,6 +420,75 @@ func TestLoadFileChangedReturnValue(t *testing.T) {
 	g.Expect(changed).To(gomega.BeTrue())
 }
 
+func TestParseCacheWithDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			default ""
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+
+	entry, ok := parsed.Cache["watson_auth"]
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(entry.Path).To(gomega.Equal("/mnt/watson-config/BASIC_AUTH"))
+	g.Expect(entry.Default).NotTo(gomega.BeNil())
+	g.Expect(*entry.Default).To(gomega.Equal(""))
+}
+
+func TestParseCacheWithRequired(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache kube_token /var/run/secrets/token {
+			required
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+
+	entry, ok := parsed.Cache["kube_token"]
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(entry.Path).To(gomega.Equal("/var/run/secrets/token"))
+	g.Expect(entry.Default).To(gomega.BeNil())
+}
+
+func TestParseCacheWithNonEmptyDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			default "fallback-token"
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+
+	entry := parsed.Cache["watson_auth"]
+	g.Expect(entry.Default).NotTo(gomega.BeNil())
+	g.Expect(*entry.Default).To(gomega.Equal("fallback-token"))
+}
+
 func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	g := gomega.NewWithT(t)
 
