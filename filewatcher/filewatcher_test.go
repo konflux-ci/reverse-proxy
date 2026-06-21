@@ -507,6 +507,38 @@ func TestParseCacheWithNonEmptyDefault(t *testing.T) {
 	g.Expect(*entry.Default).To(gomega.Equal("fallback-token"))
 }
 
+func TestParseCacheRejectsDefaultAndRequired(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			default ""
+			required
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	_, err := parseGlobalOption(d, nil)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("mutually exclusive"))
+}
+
+func TestParseCacheRejectsRequiredThenDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			required
+			default ""
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	_, err := parseGlobalOption(d, nil)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("mutually exclusive"))
+}
+
 func TestProvisionOptionalMissingFileUsesDefault(t *testing.T) {
 	g := gomega.NewWithT(t)
 

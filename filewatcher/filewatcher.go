@@ -292,7 +292,7 @@ func (a *App) reloadAllCached(trigger string) {
 			if errors.Is(err, os.ErrNotExist) && entry.Default != nil {
 				if prev := a.values[name].Load(); prev == nil || *prev != *entry.Default {
 					a.values[name].Store(entry.Default)
-					a.logger.Warn("cached file missing, reverted to default",
+					a.logger.Warn("cached file missing, using default",
 						zap.String("name", name),
 						zap.String("path", entry.Path),
 						zap.String("trigger", trigger))
@@ -519,18 +519,27 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				a.Cache = make(map[string]*CacheEntry)
 			}
 			entry := &CacheEntry{Path: path}
+			hasDefault, hasRequired := false, false
 			for d.NextBlock(1) {
 				switch d.Val() {
 				case "default":
+					if hasRequired {
+						return d.Errf("'default' and 'required' are mutually exclusive")
+					}
 					if !d.NextArg() {
 						return d.ArgErr()
 					}
 					defVal := d.Val()
 					entry.Default = &defVal
+					hasDefault = true
 				case "required":
+					if hasDefault {
+						return d.Errf("'default' and 'required' are mutually exclusive")
+					}
 					if d.NextArg() {
 						return d.Errf("'required' takes no arguments")
 					}
+					hasRequired = true
 				default:
 					return d.Errf("unrecognized cache option: %s", d.Val())
 				}
