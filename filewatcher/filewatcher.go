@@ -21,6 +21,9 @@
 //	        watch /mnt/trusted-ca
 //	        cache kube_token /var/run/secrets/konflux-ci.dev/serviceaccount/token
 //	        cache backend_token /var/run/secrets/konflux-ci.dev/backend/token
+//	        cache watson_auth /mnt/watson-config/BASIC_AUTH {
+//	            default ""
+//	        }
 //	        debounce 5s
 //	        poll 10s
 //	    }
@@ -468,6 +471,10 @@ func (a *App) pollLoop() {
 //	file_watcher {
 //	    watch <path>
 //	    cache <name> <path>
+//	    cache <name> <path> {
+//	        default <value>
+//	        required
+//	    }
 //	    debounce <duration>
 //	    poll <duration>
 //	}
