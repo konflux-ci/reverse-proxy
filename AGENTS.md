@@ -62,10 +62,18 @@ Kubernetes symlink rotations.
 
 ### filewatcher (`file_watcher`)
 
-- Source: `filewatcher/filewatcher.go` (~485 lines)
+- Source: `filewatcher/filewatcher.go` (~567 lines)
 - Two behaviors:
   1. **Watch directories**: sends SIGUSR1 on changes → config reload
   2. **Cache files**: reads into `atomic.Pointer[string]`, updated via fsnotify
+- Cache entries use `CacheEntry` struct (`Path`, `Default *string`) — files are
+  required by default (missing = startup error). Use `default` keyword in a
+  sub-block to make a file optional:
+  ```
+  cache watson_auth /mnt/watson-config/BASIC_AUTH {
+      default ""
+  }
+  ```
 - Companion middleware `inject_cached_vars` sets `{http.vars.*}` from cache
 - Caddy interfaces: `caddy.App` (Start/Stop), `caddy.Provisioner`
 
