@@ -29,7 +29,7 @@ func newTestApp(t *testing.T, paths []string) *App {
 	}
 }
 
-func newTestAppWithCache(t *testing.T, cache map[string]string) *App {
+func newTestAppWithCache(t *testing.T, cache map[string]*CacheEntry) *App {
 	t.Helper()
 	app := &App{
 		Cache:    cache,
@@ -188,7 +188,7 @@ func TestProvisionLoadsCacheFiles(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("my-secret-token\n"), 0644)).To(gomega.Succeed())
 
-	app := &App{Cache: map[string]string{"kube_token": tokenPath}}
+	app := &App{Cache: map[string]*CacheEntry{"kube_token": {Path: tokenPath}}}
 	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
 
 	val, ok := app.GetValue("kube_token")
@@ -203,17 +203,35 @@ func TestProvisionTrimsTrailingNewline(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("token-val\n\n"), 0644)).To(gomega.Succeed())
 
-	app := &App{Cache: map[string]string{"t": tokenPath}}
+	app := &App{Cache: map[string]*CacheEntry{"t": {Path: tokenPath}}}
 	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
 
 	val, _ := app.GetValue("t")
 	g.Expect(val).To(gomega.Equal("token-val"))
 }
 
+func TestProvisionFailsOnNilCacheEntry(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	app := &App{Cache: map[string]*CacheEntry{"tok": nil}}
+	err := app.Provision(caddy.Context{})
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("cache entry \"tok\" is nil"))
+}
+
+func TestProvisionFailsOnEmptyPathCacheEntry(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	app := &App{Cache: map[string]*CacheEntry{"tok": {Path: "  "}}}
+	err := app.Provision(caddy.Context{})
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("cache entry \"tok\" has an empty path"))
+}
+
 func TestProvisionFailsOnMissingCacheFile(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	app := &App{Cache: map[string]string{"missing": "/nonexistent/file"}}
+	app := &App{Cache: map[string]*CacheEntry{"missing": {Path: "/nonexistent/file"}}}
 	err := app.Provision(caddy.Context{})
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("loading cached file"))
@@ -226,7 +244,7 @@ func TestGetValueUnknownName(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("x"), 0644)).To(gomega.Succeed())
 
-	app := &App{Cache: map[string]string{"known": tokenPath}}
+	app := &App{Cache: map[string]*CacheEntry{"known": {Path: tokenPath}}}
 	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
 
 	_, ok := app.GetValue("unknown")
@@ -240,9 +258,9 @@ func TestGetAllReturnsSnapshot(t *testing.T) {
 	g.Expect(os.WriteFile(filepath.Join(dir, "a"), []byte("val-a"), 0644)).To(gomega.Succeed())
 	g.Expect(os.WriteFile(filepath.Join(dir, "b"), []byte("val-b"), 0644)).To(gomega.Succeed())
 
-	app := &App{Cache: map[string]string{
-		"file_a": filepath.Join(dir, "a"),
-		"file_b": filepath.Join(dir, "b"),
+	app := &App{Cache: map[string]*CacheEntry{
+		"file_a": {Path: filepath.Join(dir, "a")},
+		"file_b": {Path: filepath.Join(dir, "b")},
 	}}
 	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
 
@@ -259,7 +277,7 @@ func TestCacheUpdateOnFileChange(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("original"), 0644)).To(gomega.Succeed())
 
-	app := newTestAppWithCache(t, map[string]string{"tok": tokenPath})
+	app := newTestAppWithCache(t, map[string]*CacheEntry{"tok": {Path: tokenPath}})
 	_, err := app.loadFile("tok", tokenPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -283,7 +301,7 @@ func TestCachePollFallback(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("initial"), 0644)).To(gomega.Succeed())
 
-	app := newTestAppWithCache(t, map[string]string{"tok": tokenPath})
+	app := newTestAppWithCache(t, map[string]*CacheEntry{"tok": {Path: tokenPath}})
 	app.Poll = caddy.Duration(100 * time.Millisecond)
 	_, err := app.loadFile("tok", tokenPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -322,7 +340,7 @@ func TestKubernetesSymlinkRotation(t *testing.T) {
 	tokenLink := filepath.Join(baseDir, "token")
 	g.Expect(os.Symlink(filepath.Join("..data", "token"), tokenLink)).To(gomega.Succeed())
 
-	app := newTestAppWithCache(t, map[string]string{"tok": tokenLink})
+	app := newTestAppWithCache(t, map[string]*CacheEntry{"tok": {Path: tokenLink}})
 	_, err := app.loadFile("tok", tokenLink)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -357,7 +375,7 @@ func TestCacheOnlyAppNeedsNoWatch(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("val"), 0644)).To(gomega.Succeed())
 
-	app := &App{Cache: map[string]string{"tok": tokenPath}}
+	app := &App{Cache: map[string]*CacheEntry{"tok": {Path: tokenPath}}}
 	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
 	g.Expect(app.Start()).To(gomega.Succeed())
 	defer app.Stop() //nolint:errcheck
@@ -388,7 +406,8 @@ func TestParseGlobalOption(t *testing.T) {
 	var parsed App
 	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
 	g.Expect(parsed.Watch).To(gomega.Equal([]string{"/mnt/ca-bundle"}))
-	g.Expect(parsed.Cache).To(gomega.HaveKeyWithValue("kube_token", "/var/run/secrets/token"))
+	g.Expect(parsed.Cache).To(gomega.HaveKey("kube_token"))
+	g.Expect(parsed.Cache["kube_token"].Path).To(gomega.Equal("/var/run/secrets/token"))
 	g.Expect(parsed.Debounce).To(gomega.Equal(caddy.Duration(3 * time.Second)))
 	g.Expect(parsed.Poll).To(gomega.Equal(caddy.Duration(15 * time.Second)))
 }
@@ -400,7 +419,7 @@ func TestLoadFileChangedReturnValue(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("secret-v1"), 0644)).To(gomega.Succeed())
 
-	app := newTestAppWithCache(t, map[string]string{"tok": tokenPath})
+	app := newTestAppWithCache(t, map[string]*CacheEntry{"tok": {Path: tokenPath}})
 
 	// First load always reports changed.
 	changed, err := app.loadFile("tok", tokenPath)
@@ -419,6 +438,281 @@ func TestLoadFileChangedReturnValue(t *testing.T) {
 	g.Expect(changed).To(gomega.BeTrue())
 }
 
+func TestParseCacheWithDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			default ""
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+
+	entry, ok := parsed.Cache["watson_auth"]
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(entry.Path).To(gomega.Equal("/mnt/watson-config/BASIC_AUTH"))
+	g.Expect(entry.Default).NotTo(gomega.BeNil())
+	g.Expect(*entry.Default).To(gomega.Equal(""))
+}
+
+func TestParseCacheWithRequired(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache kube_token /var/run/secrets/token {
+			required
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+
+	entry, ok := parsed.Cache["kube_token"]
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(entry.Path).To(gomega.Equal("/var/run/secrets/token"))
+	g.Expect(entry.Default).To(gomega.BeNil())
+}
+
+func TestParseCacheWithNonEmptyDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			default "fallback-token"
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	result, err := parseGlobalOption(d, nil)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	appResult := result.(httpcaddyfile.App)
+	var parsed App
+	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
+
+	entry := parsed.Cache["watson_auth"]
+	g.Expect(entry.Default).NotTo(gomega.BeNil())
+	g.Expect(*entry.Default).To(gomega.Equal("fallback-token"))
+}
+
+func TestParseCacheRejectsDefaultAndRequired(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			default ""
+			required
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	_, err := parseGlobalOption(d, nil)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("mutually exclusive"))
+}
+
+func TestParseCacheRejectsRequiredThenDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	input := `file_watcher {
+		cache watson_auth /mnt/watson-config/BASIC_AUTH {
+			required
+			default ""
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(input)
+	_, err := parseGlobalOption(d, nil)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("mutually exclusive"))
+}
+
+func TestProvisionOptionalMissingFileUsesDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := "default-token"
+	app := &App{Cache: map[string]*CacheEntry{
+		"watson_auth": {Path: "/nonexistent/file", Default: &defVal},
+	}}
+	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
+
+	val, ok := app.GetValue("watson_auth")
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(val).To(gomega.Equal("default-token"))
+}
+
+func TestProvisionOptionalMissingFileUsesEmptyDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := &App{Cache: map[string]*CacheEntry{
+		"watson_auth": {Path: "/nonexistent/file", Default: &defVal},
+	}}
+	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
+
+	val, ok := app.GetValue("watson_auth")
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(val).To(gomega.Equal(""))
+}
+
+func TestReloadOptionalMissingFileRevertsToDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("real-value"), 0644)).To(gomega.Succeed())
+
+	defVal := "default-val"
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: tokenPath, Default: &defVal},
+	})
+	_, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	val, _ := app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal("real-value"))
+
+	// Remove the file
+	g.Expect(os.Remove(tokenPath)).To(gomega.Succeed())
+
+	// Trigger reload
+	app.reloadAllCached("test")
+
+	// Should revert to default
+	val, _ = app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal("default-val"))
+}
+
+func TestReloadRequiredMissingFileKeepsOldValue(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("real-value"), 0644)).To(gomega.Succeed())
+
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: tokenPath},
+	})
+	_, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	g.Expect(os.Remove(tokenPath)).To(gomega.Succeed())
+
+	app.reloadAllCached("test")
+
+	val, _ := app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal("real-value"))
+}
+
+func TestOptionalFileAppearsLaterPickedUpByPoll(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: tokenPath, Default: &defVal},
+	})
+	app.Poll = caddy.Duration(100 * time.Millisecond)
+	app.values["tok"].Store(&defVal)
+
+	go app.pollLoop()
+	defer app.Stop() //nolint:errcheck
+
+	val, _ := app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal(""))
+
+	// Create the file after startup
+	g.Expect(os.WriteFile(tokenPath, []byte("appeared-token"), 0644)).To(gomega.Succeed())
+
+	g.Eventually(func() string {
+		val, _ := app.GetValue("tok")
+		return val
+	}, 1*time.Second, 50*time.Millisecond).Should(gomega.Equal("appeared-token"))
+}
+
+func TestProvisionExistingFileIgnoresDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("real-value"), 0644)).To(gomega.Succeed())
+
+	defVal := "default-token"
+	app := &App{Cache: map[string]*CacheEntry{
+		"tok": {Path: tokenPath, Default: &defVal},
+	}}
+	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
+
+	val, ok := app.GetValue("tok")
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(val).To(gomega.Equal("real-value"))
+}
+
+func TestIsDirOptionalAllOptional(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"a": {Path: "/mnt/config/a", Default: &defVal},
+		"b": {Path: "/mnt/config/b", Default: &defVal},
+	})
+	g.Expect(app.isDirOptional("/mnt/config")).To(gomega.BeTrue())
+}
+
+func TestIsDirOptionalMixedEntries(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"required_tok": {Path: "/mnt/config/token"},
+		"optional_tok": {Path: "/mnt/config/auth", Default: &defVal},
+	})
+	g.Expect(app.isDirOptional("/mnt/config")).To(gomega.BeFalse())
+}
+
+func TestIsDirOptionalNoMatchingEntries(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: "/other/dir/token"},
+	})
+	g.Expect(app.isDirOptional("/mnt/config")).To(gomega.BeFalse())
+}
+
+func TestStartOptionalCacheMissingParentDir(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	existingTokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(existingTokenPath, []byte("val"), 0644)).To(gomega.Succeed())
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"required_tok": {Path: existingTokenPath},
+		"optional_tok": {Path: "/nonexistent/dir/token", Default: &defVal},
+	})
+	_, err := app.loadFile("required_tok", existingTokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	app.values["optional_tok"].Store(&defVal)
+
+	g.Expect(app.Start()).To(gomega.Succeed())
+	defer app.Stop() //nolint:errcheck
+}
+
 func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	g := gomega.NewWithT(t)
 
@@ -435,4 +729,46 @@ func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	var parsed App
 	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
 	g.Expect(time.Duration(parsed.Poll)).To(gomega.BeNumerically("<", 0))
+}
+
+func TestCacheEntryUnmarshalJSONString(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	data := []byte(`"/var/run/secrets/token"`)
+	var entry CacheEntry
+	g.Expect(json.Unmarshal(data, &entry)).To(gomega.Succeed())
+	g.Expect(entry.Path).To(gomega.Equal("/var/run/secrets/token"))
+	g.Expect(entry.Default).To(gomega.BeNil())
+}
+
+func TestCacheEntryUnmarshalJSONObject(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	data := []byte(`{"path":"/mnt/config/AUTH","default":""}`)
+	var entry CacheEntry
+	g.Expect(json.Unmarshal(data, &entry)).To(gomega.Succeed())
+	g.Expect(entry.Path).To(gomega.Equal("/mnt/config/AUTH"))
+	g.Expect(entry.Default).NotTo(gomega.BeNil())
+	g.Expect(*entry.Default).To(gomega.Equal(""))
+}
+
+func TestAppJSONRoundTripMixedEntries(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := &App{Cache: map[string]*CacheEntry{
+		"required_tok": {Path: "/var/run/secrets/token"},
+		"optional_tok": {Path: "/mnt/config/AUTH", Default: &defVal},
+	}}
+
+	data, err := json.Marshal(app)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var parsed App
+	g.Expect(json.Unmarshal(data, &parsed)).To(gomega.Succeed())
+	g.Expect(parsed.Cache["required_tok"].Path).To(gomega.Equal("/var/run/secrets/token"))
+	g.Expect(parsed.Cache["required_tok"].Default).To(gomega.BeNil())
+	g.Expect(parsed.Cache["optional_tok"].Path).To(gomega.Equal("/mnt/config/AUTH"))
+	g.Expect(parsed.Cache["optional_tok"].Default).NotTo(gomega.BeNil())
+	g.Expect(*parsed.Cache["optional_tok"].Default).To(gomega.Equal(""))
 }

@@ -21,6 +21,9 @@
 //	        watch /mnt/trusted-ca
 //	        cache kube_token /var/run/secrets/konflux-ci.dev/serviceaccount/token
 //	        cache backend_token /var/run/secrets/konflux-ci.dev/backend/token
+//	        cache watson_auth /mnt/watson-config/BASIC_AUTH {
+//	            default ""
+//	        }
 //	        debounce 5s
 //	        poll 10s
 //	    }
@@ -28,6 +31,8 @@
 package filewatcher
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,9 +64,9 @@ type App struct {
 	// Directories to watch for changes that trigger SIGUSR1.
 	Watch []string `json:"watch,omitempty"`
 
-	// Files to cache in memory. Map of logical name to file path.
+	// Files to cache in memory. Map of logical name to cache entry.
 	// Values are accessible via GetValue/GetAll from the middleware.
-	Cache map[string]string `json:"cache,omitempty"`
+	Cache map[string]*CacheEntry `json:"cache,omitempty"`
 
 	// How long to wait after the last filesystem event before sending SIGUSR1.
 	// Only applies to watch paths, not cache paths (cache updates are instant).
@@ -82,6 +87,31 @@ type App struct {
 
 	// signalFn sends the reload signal. Overridable for testing.
 	signalFn func() error
+}
+
+// CacheEntry defines a single cached file with optional default behavior.
+// When Default is nil the file is required (Caddy fails to start if missing).
+// When Default is non-nil the value is used when the file does not exist.
+type CacheEntry struct {
+	Path    string  `json:"path"`
+	Default *string `json:"default,omitempty"`
+}
+
+func (e *CacheEntry) UnmarshalJSON(data []byte) error {
+	// Backward compat: accept a bare string as a required entry.
+	var path string
+	if err := json.Unmarshal(data, &path); err == nil {
+		e.Path = path
+		return nil
+	}
+
+	type alias CacheEntry
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*e = CacheEntry(a)
+	return nil
 }
 
 // CaddyModule returns the Caddy module information.
@@ -115,11 +145,24 @@ func (a *App) Provision(ctx caddy.Context) error {
 
 	// Initialize cache values
 	a.values = make(map[string]*atomic.Pointer[string], len(a.Cache))
-	for name, path := range a.Cache {
+	for name, entry := range a.Cache {
+		if entry == nil {
+			return fmt.Errorf("cache entry %q is nil", name)
+		}
+		if strings.TrimSpace(entry.Path) == "" {
+			return fmt.Errorf("cache entry %q has an empty path", name)
+		}
 		ptr := &atomic.Pointer[string]{}
 		a.values[name] = ptr
-		if _, err := a.loadFile(name, path); err != nil {
-			return fmt.Errorf("loading cached file %q (%s): %v", name, path, err)
+		if _, err := a.loadFile(name, entry.Path); err != nil {
+			if errors.Is(err, os.ErrNotExist) && entry.Default != nil {
+				a.values[name].Store(entry.Default)
+				a.logger.Info("cached file not found, using default",
+					zap.String("name", name),
+					zap.String("path", entry.Path))
+				continue
+			}
+			return fmt.Errorf("loading cached file %q (%s): %v", name, entry.Path, err)
 		}
 	}
 
@@ -133,9 +176,17 @@ func (a *App) Start() error {
 		return err
 	}
 
+	cacheSummary := make(map[string]string, len(a.Cache))
+	for name, entry := range a.Cache {
+		label := entry.Path
+		if entry.Default != nil {
+			label += " (optional)"
+		}
+		cacheSummary[name] = label
+	}
 	a.logger.Info("file watcher started",
 		zap.Strings("watch_paths", a.Watch),
-		zap.Any("cache_files", a.Cache),
+		zap.Any("cache_files", cacheSummary),
 		zap.Duration("debounce", time.Duration(a.Debounce)),
 		zap.Duration("poll", time.Duration(a.Poll)))
 
@@ -164,6 +215,11 @@ func (a *App) createWatcher() (*fsnotify.Watcher, error) {
 	cacheDirs := a.cacheParentDirs()
 	for _, dir := range cacheDirs {
 		if err := watcher.Add(dir); err != nil {
+			if errors.Is(err, os.ErrNotExist) && a.isDirOptional(dir) {
+				a.logger.Info("skipping watch for missing optional cache directory",
+					zap.String("dir", dir))
+				continue
+			}
 			_ = watcher.Close()
 			return nil, fmt.Errorf("watching cache directory %q: %v", dir, err)
 		}
@@ -230,18 +286,28 @@ func (a *App) loadFile(name, path string) (changed bool, err error) {
 }
 
 func (a *App) reloadAllCached(trigger string) {
-	for name, path := range a.Cache {
-		changed, err := a.loadFile(name, path)
+	for name, entry := range a.Cache {
+		changed, err := a.loadFile(name, entry.Path)
 		if err != nil {
-			a.logger.Warn("failed to reload cached file",
-				zap.String("name", name),
-				zap.String("path", path),
-				zap.String("trigger", trigger),
-				zap.Error(err))
+			if errors.Is(err, os.ErrNotExist) && entry.Default != nil {
+				if prev := a.values[name].Load(); prev == nil || *prev != *entry.Default {
+					a.values[name].Store(entry.Default)
+					a.logger.Warn("cached file missing, using default",
+						zap.String("name", name),
+						zap.String("path", entry.Path),
+						zap.String("trigger", trigger))
+				}
+			} else {
+				a.logger.Warn("failed to reload cached file",
+					zap.String("name", name),
+					zap.String("path", entry.Path),
+					zap.String("trigger", trigger),
+					zap.Error(err))
+			}
 		} else if changed {
 			a.logger.Info("cached file reloaded",
 				zap.String("name", name),
-				zap.String("path", path),
+				zap.String("path", entry.Path),
 				zap.String("trigger", trigger))
 		}
 	}
@@ -250,8 +316,8 @@ func (a *App) reloadAllCached(trigger string) {
 func (a *App) cacheParentDirs() []string {
 	seen := make(map[string]struct{})
 	var dirs []string
-	for _, path := range a.Cache {
-		dir := filepath.Dir(path)
+	for _, entry := range a.Cache {
+		dir := filepath.Dir(entry.Path)
 		if _, ok := seen[dir]; !ok {
 			seen[dir] = struct{}{}
 			dirs = append(dirs, dir)
@@ -271,12 +337,25 @@ func (a *App) cacheParentDirs() []string {
 	return result
 }
 
+func (a *App) isDirOptional(dir string) bool {
+	found := false
+	for _, entry := range a.Cache {
+		if filepath.Dir(entry.Path) == dir {
+			found = true
+			if entry.Default == nil {
+				return false
+			}
+		}
+	}
+	return found
+}
+
 // isCacheEvent returns true if the fsnotify event's path is within a
 // directory that contains one of the cached files.
 func (a *App) isCacheEvent(eventPath string) bool {
 	eventDir := filepath.Dir(eventPath)
-	for _, path := range a.Cache {
-		if filepath.Dir(path) == eventDir {
+	for _, entry := range a.Cache {
+		if filepath.Dir(entry.Path) == eventDir {
 			return true
 		}
 	}
@@ -410,6 +489,10 @@ func (a *App) pollLoop() {
 //	file_watcher {
 //	    watch <path>
 //	    cache <name> <path>
+//	    cache <name> <path> {
+//	        default <value>
+//	        required
+//	    }
 //	    debounce <duration>
 //	    poll <duration>
 //	}
@@ -433,9 +516,35 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			path := d.Val()
 			if a.Cache == nil {
-				a.Cache = make(map[string]string)
+				a.Cache = make(map[string]*CacheEntry)
 			}
-			a.Cache[name] = path
+			entry := &CacheEntry{Path: path}
+			hasDefault, hasRequired := false, false
+			for d.NextBlock(1) {
+				switch d.Val() {
+				case "default":
+					if hasRequired {
+						return d.Errf("'default' and 'required' are mutually exclusive")
+					}
+					if !d.NextArg() {
+						return d.ArgErr()
+					}
+					defVal := d.Val()
+					entry.Default = &defVal
+					hasDefault = true
+				case "required":
+					if hasDefault {
+						return d.Errf("'default' and 'required' are mutually exclusive")
+					}
+					if d.NextArg() {
+						return d.Errf("'required' takes no arguments")
+					}
+					hasRequired = true
+				default:
+					return d.Errf("unrecognized cache option: %s", d.Val())
+				}
+			}
+			a.Cache[name] = entry
 		case "debounce":
 			if !d.NextArg() {
 				return d.ArgErr()

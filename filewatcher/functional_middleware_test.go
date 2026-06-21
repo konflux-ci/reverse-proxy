@@ -108,3 +108,79 @@ func TestMiddlewareFunctionalCaddyfile(t *testing.T) {
 	g.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK))
 	g.Expect(lastAuthHeader).To(gomega.Equal("Bearer rotated-token-value"))
 }
+
+// TestOptionalCacheFunctionalCaddyfile starts a full Caddy server with an
+// optional cache entry whose file does not exist at startup. It verifies:
+// 1. Caddy starts successfully despite the missing file
+// 2. The default value (empty string) is injected into requests
+// 3. When the file appears, the new value is picked up
+func TestOptionalCacheFunctionalCaddyfile(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	optionalDir := t.TempDir()
+	optionalTokenPath := filepath.Join(optionalDir, "optional_token")
+
+	var lastAuthHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastAuthHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "OK")
+	}))
+	defer upstream.Close()
+
+	caddyPort := freePortForMiddleware(t)
+	adminPort := freePortForMiddleware(t)
+
+	caddyfileContent := fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+	order inject_cached_vars before reverse_proxy
+	file_watcher {
+		cache optional_tok %s {
+			default ""
+		}
+		poll 100ms
+	}
+}
+
+:%d {
+	route {
+		inject_cached_vars
+		reverse_proxy %s {
+			header_up Authorization "Bearer {http.vars.optional_tok}"
+		}
+	}
+}
+`, adminPort, optionalTokenPath, caddyPort, upstream.Listener.Addr().String())
+
+	adapter := caddyconfig.GetAdapter("caddyfile")
+	g.Expect(adapter).NotTo(gomega.BeNil())
+
+	jsonCfg, _, err := adapter.Adapt([]byte(caddyfileContent), nil)
+	g.Expect(err).NotTo(gomega.HaveOccurred(), "Caddyfile adaptation failed")
+
+	g.Expect(caddy.Load(jsonCfg, true)).To(gomega.Succeed())
+	defer caddy.Stop() //nolint:errcheck
+
+	time.Sleep(300 * time.Millisecond)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/", caddyPort)
+
+	resp, err := client.Get(url)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	g.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK))
+	g.Expect(lastAuthHeader).To(gomega.Equal("Bearer"))
+
+	g.Expect(os.WriteFile(optionalTokenPath, []byte("appeared-token"), 0644)).To(gomega.Succeed())
+
+	time.Sleep(500 * time.Millisecond)
+
+	resp, err = client.Get(url)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	g.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK))
+	g.Expect(lastAuthHeader).To(gomega.Equal("Bearer appeared-token"))
+}

@@ -82,7 +82,7 @@ func TestMiddlewareIntegrationWithApp(t *testing.T) {
 	tokenPath := filepath.Join(dir, "token")
 	g.Expect(os.WriteFile(tokenPath, []byte("live-token"), 0644)).To(gomega.Succeed())
 
-	app := &App{Cache: map[string]string{"tok": tokenPath}}
+	app := &App{Cache: map[string]*CacheEntry{"tok": {Path: tokenPath}}}
 	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
 
 	m := &Middleware{app: app}

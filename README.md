@@ -201,6 +201,11 @@ Caddy app module (`file_watcher`) with two behaviors:
         cache kube_token /var/run/secrets/konflux-ci.dev/serviceaccount/token
         cache backend_token /var/run/secrets/konflux-ci.dev/backend/token
 
+        # Optional file — use empty default when file doesn't exist
+        cache watson_auth /mnt/watson-config/BASIC_AUTH {
+            default ""
+        }
+
         debounce 5s
         poll 10s
     }
@@ -222,6 +227,26 @@ route {
 | `cache` | *(repeatable)* | `<name> <path>` — cache file content as `{http.vars.<name>}` |
 | `debounce` | `5s` | Wait time after last fs event before sending SIGUSR1 |
 | `poll` | `10s` | Fallback poll interval for cached files (catches missed fsnotify events) |
+
+#### Cache entry options
+
+Each `cache` entry can optionally include a sub-block:
+
+```caddyfile
+cache <name> <path> {
+    default <value>    # use <value> when file doesn't exist
+    required           # fail startup if file is missing (default behavior)
+}
+```
+
+| Option | Description |
+|--------|-------------|
+| `default` | Value to use when the file doesn't exist. If the file later appears, it is picked up automatically. If the file disappears again, the default is restored. |
+| `required` | Fail Caddy startup if the file is missing. This is the default behavior when no sub-block is specified. |
+
+This is useful for optional Kubernetes Secrets mounted with `optional: true`.
+When the Secret doesn't exist, the mount point is an empty directory and the
+cached file is absent — using `default` prevents Caddy from crashing on startup.
 
 ---
 
