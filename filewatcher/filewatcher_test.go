@@ -612,6 +612,26 @@ func TestProvisionExistingFileIgnoresDefault(t *testing.T) {
 	g.Expect(val).To(gomega.Equal("real-value"))
 }
 
+func TestStartOptionalCacheMissingParentDir(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	existingTokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(existingTokenPath, []byte("val"), 0644)).To(gomega.Succeed())
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"required_tok": {Path: existingTokenPath},
+		"optional_tok": {Path: "/nonexistent/dir/token", Default: &defVal},
+	})
+	_, err := app.loadFile("required_tok", existingTokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	app.values["optional_tok"].Store(&defVal)
+
+	g.Expect(app.Start()).To(gomega.Succeed())
+	defer app.Stop() //nolint:errcheck
+}
+
 func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	g := gomega.NewWithT(t)
 

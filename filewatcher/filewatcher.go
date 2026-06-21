@@ -198,6 +198,11 @@ func (a *App) createWatcher() (*fsnotify.Watcher, error) {
 	cacheDirs := a.cacheParentDirs()
 	for _, dir := range cacheDirs {
 		if err := watcher.Add(dir); err != nil {
+			if errors.Is(err, os.ErrNotExist) && a.isDirOptional(dir) {
+				a.logger.Info("skipping watch for missing optional cache directory",
+					zap.String("dir", dir))
+				continue
+			}
 			_ = watcher.Close()
 			return nil, fmt.Errorf("watching cache directory %q: %v", dir, err)
 		}
@@ -313,6 +318,15 @@ func (a *App) cacheParentDirs() []string {
 		}
 	}
 	return result
+}
+
+func (a *App) isDirOptional(dir string) bool {
+	for _, entry := range a.Cache {
+		if filepath.Dir(entry.Path) == dir && entry.Default != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // isCacheEvent returns true if the fsnotify event's path is within a
@@ -488,10 +502,10 @@ func (a *App) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					}
 					defVal := d.Val()
 					entry.Default = &defVal
-			case "required":
-				if d.NextArg() {
-					return d.Errf("'required' takes no arguments")
-				}
+				case "required":
+					if d.NextArg() {
+						return d.Errf("'required' takes no arguments")
+					}
 				default:
 					return d.Errf("unrecognized cache option: %s", d.Val())
 				}
