@@ -210,6 +210,24 @@ func TestProvisionTrimsTrailingNewline(t *testing.T) {
 	g.Expect(val).To(gomega.Equal("token-val"))
 }
 
+func TestProvisionFailsOnNilCacheEntry(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	app := &App{Cache: map[string]*CacheEntry{"tok": nil}}
+	err := app.Provision(caddy.Context{})
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("cache entry \"tok\" is nil"))
+}
+
+func TestProvisionFailsOnEmptyPathCacheEntry(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	app := &App{Cache: map[string]*CacheEntry{"tok": {Path: "  "}}}
+	err := app.Provision(caddy.Context{})
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("cache entry \"tok\" has an empty path"))
+}
+
 func TestProvisionFailsOnMissingCacheFile(t *testing.T) {
 	g := gomega.NewWithT(t)
 
@@ -610,6 +628,37 @@ func TestProvisionExistingFileIgnoresDefault(t *testing.T) {
 	val, ok := app.GetValue("tok")
 	g.Expect(ok).To(gomega.BeTrue())
 	g.Expect(val).To(gomega.Equal("real-value"))
+}
+
+func TestIsDirOptionalAllOptional(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"a": {Path: "/mnt/config/a", Default: &defVal},
+		"b": {Path: "/mnt/config/b", Default: &defVal},
+	})
+	g.Expect(app.isDirOptional("/mnt/config")).To(gomega.BeTrue())
+}
+
+func TestIsDirOptionalMixedEntries(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"required_tok": {Path: "/mnt/config/token"},
+		"optional_tok": {Path: "/mnt/config/auth", Default: &defVal},
+	})
+	g.Expect(app.isDirOptional("/mnt/config")).To(gomega.BeFalse())
+}
+
+func TestIsDirOptionalNoMatchingEntries(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: "/other/dir/token"},
+	})
+	g.Expect(app.isDirOptional("/mnt/config")).To(gomega.BeFalse())
 }
 
 func TestStartOptionalCacheMissingParentDir(t *testing.T) {

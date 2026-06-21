@@ -146,6 +146,12 @@ func (a *App) Provision(ctx caddy.Context) error {
 	// Initialize cache values
 	a.values = make(map[string]*atomic.Pointer[string], len(a.Cache))
 	for name, entry := range a.Cache {
+		if entry == nil {
+			return fmt.Errorf("cache entry %q is nil", name)
+		}
+		if strings.TrimSpace(entry.Path) == "" {
+			return fmt.Errorf("cache entry %q has an empty path", name)
+		}
 		ptr := &atomic.Pointer[string]{}
 		a.values[name] = ptr
 		if _, err := a.loadFile(name, entry.Path); err != nil {
@@ -170,9 +176,17 @@ func (a *App) Start() error {
 		return err
 	}
 
+	cacheSummary := make(map[string]string, len(a.Cache))
+	for name, entry := range a.Cache {
+		label := entry.Path
+		if entry.Default != nil {
+			label += " (optional)"
+		}
+		cacheSummary[name] = label
+	}
 	a.logger.Info("file watcher started",
 		zap.Strings("watch_paths", a.Watch),
-		zap.Any("cache_files", a.Cache),
+		zap.Any("cache_files", cacheSummary),
 		zap.Duration("debounce", time.Duration(a.Debounce)),
 		zap.Duration("poll", time.Duration(a.Poll)))
 
@@ -276,12 +290,12 @@ func (a *App) reloadAllCached(trigger string) {
 		changed, err := a.loadFile(name, entry.Path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && entry.Default != nil {
-				if prev := a.values[name].Load(); prev == nil || *prev != *entry.Default {
-					a.values[name].Store(entry.Default)
-					a.logger.Info("cached file missing, reverted to default",
-						zap.String("name", name),
-						zap.String("path", entry.Path),
-						zap.String("trigger", trigger))
+			if prev := a.values[name].Load(); prev == nil || *prev != *entry.Default {
+				a.values[name].Store(entry.Default)
+				a.logger.Warn("cached file missing, reverted to default",
+					zap.String("name", name),
+					zap.String("path", entry.Path),
+					zap.String("trigger", trigger))
 				}
 			} else {
 				a.logger.Warn("failed to reload cached file",
@@ -324,12 +338,16 @@ func (a *App) cacheParentDirs() []string {
 }
 
 func (a *App) isDirOptional(dir string) bool {
+	found := false
 	for _, entry := range a.Cache {
-		if filepath.Dir(entry.Path) == dir && entry.Default != nil {
-			return true
+		if filepath.Dir(entry.Path) == dir {
+			found = true
+			if entry.Default == nil {
+				return false
+			}
 		}
 	}
-	return false
+	return found
 }
 
 // isCacheEvent returns true if the fsnotify event's path is within a
