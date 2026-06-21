@@ -290,12 +290,12 @@ func (a *App) reloadAllCached(trigger string) {
 		changed, err := a.loadFile(name, entry.Path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && entry.Default != nil {
-			if prev := a.values[name].Load(); prev == nil || *prev != *entry.Default {
-				a.values[name].Store(entry.Default)
-				a.logger.Warn("cached file missing, reverted to default",
-					zap.String("name", name),
-					zap.String("path", entry.Path),
-					zap.String("trigger", trigger))
+				if prev := a.values[name].Load(); prev == nil || *prev != *entry.Default {
+					a.values[name].Store(entry.Default)
+					a.logger.Warn("cached file missing, reverted to default",
+						zap.String("name", name),
+						zap.String("path", entry.Path),
+						zap.String("trigger", trigger))
 				}
 			} else {
 				a.logger.Warn("failed to reload cached file",
