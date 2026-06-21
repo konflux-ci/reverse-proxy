@@ -517,6 +517,101 @@ func TestProvisionOptionalMissingFileUsesEmptyDefault(t *testing.T) {
 	g.Expect(val).To(gomega.Equal(""))
 }
 
+func TestReloadOptionalMissingFileRevertsToDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("real-value"), 0644)).To(gomega.Succeed())
+
+	defVal := "default-val"
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: tokenPath, Default: &defVal},
+	})
+	_, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	val, _ := app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal("real-value"))
+
+	// Remove the file
+	g.Expect(os.Remove(tokenPath)).To(gomega.Succeed())
+
+	// Trigger reload
+	app.reloadAllCached("test")
+
+	// Should revert to default
+	val, _ = app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal("default-val"))
+}
+
+func TestReloadRequiredMissingFileKeepsOldValue(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("real-value"), 0644)).To(gomega.Succeed())
+
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: tokenPath},
+	})
+	_, err := app.loadFile("tok", tokenPath)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	g.Expect(os.Remove(tokenPath)).To(gomega.Succeed())
+
+	app.reloadAllCached("test")
+
+	val, _ := app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal("real-value"))
+}
+
+func TestOptionalFileAppearsLaterPickedUpByPoll(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+
+	defVal := ""
+	app := newTestAppWithCache(t, map[string]*CacheEntry{
+		"tok": {Path: tokenPath, Default: &defVal},
+	})
+	app.Poll = caddy.Duration(100 * time.Millisecond)
+	app.values["tok"].Store(&defVal)
+
+	go app.pollLoop()
+	defer app.Stop() //nolint:errcheck
+
+	val, _ := app.GetValue("tok")
+	g.Expect(val).To(gomega.Equal(""))
+
+	// Create the file after startup
+	g.Expect(os.WriteFile(tokenPath, []byte("appeared-token"), 0644)).To(gomega.Succeed())
+
+	g.Eventually(func() string {
+		val, _ := app.GetValue("tok")
+		return val
+	}, 1*time.Second, 50*time.Millisecond).Should(gomega.Equal("appeared-token"))
+}
+
+func TestProvisionExistingFileIgnoresDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	g.Expect(os.WriteFile(tokenPath, []byte("real-value"), 0644)).To(gomega.Succeed())
+
+	defVal := "default-token"
+	app := &App{Cache: map[string]*CacheEntry{
+		"tok": {Path: tokenPath, Default: &defVal},
+	}}
+	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
+
+	val, ok := app.GetValue("tok")
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(val).To(gomega.Equal("real-value"))
+}
+
 func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	g := gomega.NewWithT(t)
 
