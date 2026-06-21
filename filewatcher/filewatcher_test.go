@@ -649,3 +649,45 @@ func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	g.Expect(json.Unmarshal(appResult.Value, &parsed)).To(gomega.Succeed())
 	g.Expect(time.Duration(parsed.Poll)).To(gomega.BeNumerically("<", 0))
 }
+
+func TestCacheEntryUnmarshalJSONString(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	data := []byte(`"/var/run/secrets/token"`)
+	var entry CacheEntry
+	g.Expect(json.Unmarshal(data, &entry)).To(gomega.Succeed())
+	g.Expect(entry.Path).To(gomega.Equal("/var/run/secrets/token"))
+	g.Expect(entry.Default).To(gomega.BeNil())
+}
+
+func TestCacheEntryUnmarshalJSONObject(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	data := []byte(`{"path":"/mnt/config/AUTH","default":""}`)
+	var entry CacheEntry
+	g.Expect(json.Unmarshal(data, &entry)).To(gomega.Succeed())
+	g.Expect(entry.Path).To(gomega.Equal("/mnt/config/AUTH"))
+	g.Expect(entry.Default).NotTo(gomega.BeNil())
+	g.Expect(*entry.Default).To(gomega.Equal(""))
+}
+
+func TestAppJSONRoundTripMixedEntries(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := &App{Cache: map[string]*CacheEntry{
+		"required_tok": {Path: "/var/run/secrets/token"},
+		"optional_tok": {Path: "/mnt/config/AUTH", Default: &defVal},
+	}}
+
+	data, err := json.Marshal(app)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var parsed App
+	g.Expect(json.Unmarshal(data, &parsed)).To(gomega.Succeed())
+	g.Expect(parsed.Cache["required_tok"].Path).To(gomega.Equal("/var/run/secrets/token"))
+	g.Expect(parsed.Cache["required_tok"].Default).To(gomega.BeNil())
+	g.Expect(parsed.Cache["optional_tok"].Path).To(gomega.Equal("/mnt/config/AUTH"))
+	g.Expect(parsed.Cache["optional_tok"].Default).NotTo(gomega.BeNil())
+	g.Expect(*parsed.Cache["optional_tok"].Default).To(gomega.Equal(""))
+}
