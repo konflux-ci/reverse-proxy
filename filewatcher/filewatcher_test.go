@@ -489,6 +489,34 @@ func TestParseCacheWithNonEmptyDefault(t *testing.T) {
 	g.Expect(*entry.Default).To(gomega.Equal("fallback-token"))
 }
 
+func TestProvisionOptionalMissingFileUsesDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := "default-token"
+	app := &App{Cache: map[string]*CacheEntry{
+		"watson_auth": {Path: "/nonexistent/file", Default: &defVal},
+	}}
+	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
+
+	val, ok := app.GetValue("watson_auth")
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(val).To(gomega.Equal("default-token"))
+}
+
+func TestProvisionOptionalMissingFileUsesEmptyDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	defVal := ""
+	app := &App{Cache: map[string]*CacheEntry{
+		"watson_auth": {Path: "/nonexistent/file", Default: &defVal},
+	}}
+	g.Expect(app.Provision(caddy.Context{})).To(gomega.Succeed())
+
+	val, ok := app.GetValue("watson_auth")
+	g.Expect(ok).To(gomega.BeTrue())
+	g.Expect(val).To(gomega.Equal(""))
+}
+
 func TestParseGlobalOptionPollZeroDisables(t *testing.T) {
 	g := gomega.NewWithT(t)
 

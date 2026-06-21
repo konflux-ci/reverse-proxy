@@ -29,6 +29,7 @@ package filewatcher
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -145,6 +146,13 @@ func (a *App) Provision(ctx caddy.Context) error {
 		ptr := &atomic.Pointer[string]{}
 		a.values[name] = ptr
 		if _, err := a.loadFile(name, entry.Path); err != nil {
+			if errors.Is(err, os.ErrNotExist) && entry.Default != nil {
+				a.values[name].Store(entry.Default)
+				a.logger.Info("cached file not found, using default",
+					zap.String("name", name),
+					zap.String("path", entry.Path))
+				continue
+			}
 			return fmt.Errorf("loading cached file %q (%s): %v", name, entry.Path, err)
 		}
 	}
