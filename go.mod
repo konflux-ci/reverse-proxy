@@ -6,7 +6,7 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.4
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/onsi/ginkgo/v2 v2.31.0
-	github.com/onsi/gomega v1.41.0
+	github.com/onsi/gomega v1.42.0
 	go.uber.org/zap v1.28.0
 )
 
