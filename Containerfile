@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/hi/go@sha256:f5c583651b68cd42f1779795f6f32ad10ec1fff001b6e2274b44e886be1d2d50 AS builder
+FROM registry.access.redhat.com/hi/go@sha256:314142a01db3aca97a764b6b2b16f888f4c6ae4e4e2b605ca341b888ab6f4131 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
