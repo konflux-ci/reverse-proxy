@@ -150,9 +150,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 //
 // Processing order:
 //  1. Read source headers before any deletions.
-//  2. Strip all Kubernetes impersonation headers (Impersonate-User,
-//     Impersonate-Group, Impersonate-Uid, Impersonate-Extra-*) plus the
-//     configured TargetUser/TargetGroup if they differ from the K8s defaults.
+//  2. Strip source headers, all Kubernetes impersonation headers
+//     (Impersonate-User, Impersonate-Group, Impersonate-Uid,
+//     Impersonate-Extra-*), and the configured TargetUser/TargetGroup.
 //  3. If SourceUser is empty or whitespace-only, reject with 401.
 //  4. Set TargetUser from SourceUser.
 //  5. Split SourceGroups by Separator, trim whitespace, skip empty values,
@@ -162,6 +162,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	user := strings.TrimSpace(r.Header.Get(h.SourceUser))
 	groupsRaw := r.Header.Get(h.SourceGroups)
 
+	r.Header.Del(h.SourceUser)
+	r.Header.Del(h.SourceGroups)
 	r.Header.Del("Impersonate-User")
 	r.Header.Del("Impersonate-Group")
 	r.Header.Del("Impersonate-Uid")

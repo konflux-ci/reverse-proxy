@@ -67,6 +67,17 @@ func TestDefaultsSetImpersonateUser(t *testing.T) {
 	g.Expect(got.header.Get("Impersonate-User")).To(gomega.Equal("alice@example.com"))
 }
 
+func TestSourceHeadersStripped(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	h := &Handler{}
+	provision(t, h)
+
+	got := serve(t, h, newRequest("alice@example.com", "devs"))
+	g.Expect(got.header.Get("X-Auth-Request-Email")).To(gomega.BeEmpty())
+	g.Expect(got.header.Get("X-Auth-Request-Groups")).To(gomega.BeEmpty())
+}
+
 func TestSingleGroup(t *testing.T) {
 	g := gomega.NewWithT(t)
 

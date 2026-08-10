@@ -193,6 +193,8 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(backend.last.Get("Impersonate-User")).To(Equal("alice@example.com"))
 		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
 			[]string{"developers", "platform-team", "system:authenticated"}))
+		Expect(backend.last.Get("X-Auth-Request-Email")).To(BeEmpty())
+		Expect(backend.last.Get("X-Auth-Request-Groups")).To(BeEmpty())
 	})
 
 	It("writes X-User and X-Group when configured for namespace-lister", func() {
