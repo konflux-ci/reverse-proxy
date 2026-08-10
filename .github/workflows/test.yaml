@@ -53,6 +53,7 @@ jobs:
 
       - name: Run govulncheck
         run: |
+          make govulncheck-tool
           EXIT_CODE=0
           make govulncheck-sarif > govulncheck.sarif || EXIT_CODE=$?
           if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 3 ]; then
