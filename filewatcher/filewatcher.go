@@ -263,7 +263,7 @@ const maxCacheFileSize = 1 << 20 // 1 MB
 // loadFile reads the file at path into the cache. It returns true if the
 // content changed compared to the previously cached value.
 func (a *App) loadFile(name, path string) (changed bool, err error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is admin-controlled Caddyfile config, not runtime user input
 	if err != nil {
 		return false, err
 	}
@@ -384,7 +384,7 @@ func (a *App) watchLoop(initialWatcher *fsnotify.Watcher) {
 
 	for {
 		exited := a.runWatcher(watcher)
-		watcher.Close() //nolint:errcheck
+		watcher.Close() //nolint:errcheck,gosec // best-effort cleanup before recreating watcher
 
 		if exited {
 			return

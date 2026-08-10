@@ -9,6 +9,7 @@ linters:
     - errcheck
     - goconst
     - gocyclo
+    - gosec
     - govet
     - ineffassign
     - lll
@@ -27,6 +28,15 @@ linters:
         - name: import-shadowing
   exclusions:
     generated: lax
+    rules:
+      # G104: unhandled errors in test cleanup (defer Close)
+      # G301: test temp directories use 0755
+      # G306: test temp files use 0644 (e.g. certs, CA bundles)
+      # G402: InsecureSkipVerify needed for local TLS testing
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G104|G301|G306|G402"
     paths:
       - third_party$
       - builtin$
