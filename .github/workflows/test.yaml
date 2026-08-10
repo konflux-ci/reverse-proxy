@@ -59,6 +59,8 @@ jobs:
           if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 3 ]; then
             exit "$EXIT_CODE"
           fi
+          jq '(.runs[].tool.driver.rules[]?.properties.tags) |= unique' govulncheck.sarif > govulncheck-clean.sarif
+          mv govulncheck-clean.sarif govulncheck.sarif
 
       - name: Upload SARIF report
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
