@@ -141,18 +141,31 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // target headers, and passes the request to the next handler.
 //
 // Processing order:
-//  1. Copy SourceUser → TargetUser (skip if source is empty).
-//  2. Delete any pre-existing TargetGroup headers.
-//  3. Split SourceGroups by Separator, trim whitespace, skip empty values,
+//  1. Strip all impersonation headers (TargetUser, TargetGroup,
+//     Impersonate-Uid, and any Impersonate-Extra-* headers).
+//  2. If SourceUser is empty, reject the request with 401.
+//  3. Set TargetUser from SourceUser.
+//  4. Split SourceGroups by Separator, trim whitespace, skip empty values,
 //     and add each as an individual TargetGroup header.
-//  4. Append all AlwaysInclude groups as additional TargetGroup headers.
+//  5. Append all AlwaysInclude groups as additional TargetGroup headers.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	user := r.Header.Get(h.SourceUser)
-	if user != "" {
-		r.Header.Set(h.TargetUser, user)
+	r.Header.Del(h.TargetUser)
+	r.Header.Del(h.TargetGroup)
+	r.Header.Del("Impersonate-Uid")
+	for name := range r.Header {
+		if strings.HasPrefix(name, "Impersonate-Extra-") {
+			delete(r.Header, name)
+		}
 	}
 
-	r.Header.Del(h.TargetGroup)
+	user := r.Header.Get(h.SourceUser)
+	if user == "" {
+		h.logger.Warn("source user header is empty, rejecting request",
+			zap.String("source_header", h.SourceUser))
+		w.WriteHeader(http.StatusUnauthorized)
+		return nil
+	}
+	r.Header.Set(h.TargetUser, user)
 
 	groupsRaw := r.Header.Get(h.SourceGroups)
 	if groupsRaw != "" {

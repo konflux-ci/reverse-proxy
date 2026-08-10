@@ -110,12 +110,14 @@ func hostPort(srv *httptest.Server) string {
 	return srv.Listener.Addr().String()
 }
 
-func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
+func httpGet(url string, extraHeaders ...http.Header) *http.Response {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	for _, h := range extraHeaders {
-		for k, v := range h {
-			req.Header.Set(k, v)
+		for k, vals := range h {
+			for _, v := range vals {
+				req.Header.Add(k, v)
+			}
 		}
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -128,9 +130,9 @@ func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
 	return resp
 }
 
-// kubeImpersonationCaddyfile mirrors the Konflux production config: strip
-// client-supplied impersonation headers, authenticate via forward_auth,
-// translate groups with the impersonate handler, then proxy to the backend.
+// kubeImpersonationCaddyfile wires forward_auth → impersonate → reverse_proxy
+// without any Caddyfile-level request_header stripping. The impersonate handler
+// itself is responsible for stripping client-supplied impersonation headers.
 func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
 	return fmt.Sprintf(`{
 	admin 127.0.0.1:%d
@@ -138,9 +140,6 @@ func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr
 
 :%d {
 	route {
-		request_header -Impersonate-User
-		request_header -Impersonate-Group
-
 		forward_auth %s {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-Email X-Auth-Request-Groups
@@ -237,13 +236,37 @@ var _ = Describe("Impersonate handler functional tests", func() {
 	It("strips malicious client-supplied Impersonate-* headers before authentication", func() {
 		backend, port := setupProxy("eve@example.com", "devs", kubeImpersonationCaddyfile)
 
-		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
-			"Impersonate-User":  "attacker@evil.com",
-			"Impersonate-Group": "cluster-admin",
+		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), http.Header{
+			"Impersonate-User":  {"attacker@evil.com"},
+			"Impersonate-Group": {"cluster-admin"},
 		})
 
 		Expect(backend.last.Get("Impersonate-User")).To(Equal("eve@example.com"))
 		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
 			[]string{"devs", "system:authenticated"}))
+	})
+
+	It("strips Impersonate-Uid and Impersonate-Extra-* headers from client requests", func() {
+		backend, port := setupProxy("frank@example.com", "devs", kubeImpersonationCaddyfile)
+
+		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), http.Header{
+			"Impersonate-Uid":             {"fake-uid-12345"},
+			"Impersonate-Extra-Scopes":    {"cluster-admin"},
+			"Impersonate-Extra-Reason":    {"testing"},
+			"Impersonate-Extra-Something": {"else"},
+		})
+
+		Expect(backend.last.Get("Impersonate-Uid")).To(BeEmpty())
+		Expect(backend.last.Get("Impersonate-Extra-Scopes")).To(BeEmpty())
+		Expect(backend.last.Get("Impersonate-Extra-Reason")).To(BeEmpty())
+		Expect(backend.last.Get("Impersonate-Extra-Something")).To(BeEmpty())
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("frank@example.com"))
+	})
+
+	It("returns 401 when auth proxy provides no user identity", func() {
+		_, port := setupProxy("", "devs", kubeImpersonationCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 })
