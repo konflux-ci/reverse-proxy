@@ -111,7 +111,7 @@ GOVULNCHECK_VERSION ?= $(shell tr -d ' \r\n' < $(GOVULNCHECK_VERSION_FILE))
 .PHONY: govulncheck-tool
 govulncheck-tool: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
 $(GOVULNCHECK): $(LOCALBIN) $(PROJECT_ROOT).govulncheck-version
-	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,v$(GOVULNCHECK_VERSION))
+	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
 
 define go-install-tool
 @[ -f "$(1)-$(3)" ] || { \
