@@ -44,10 +44,10 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
@@ -55,10 +55,14 @@ jobs:
         run: |
           GOVULNCHECK_VERSION=$(tr -d ' \r\n' < .govulncheck-version)
           go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
-          govulncheck -format sarif ./... > govulncheck.sarif || true
+          govulncheck -format sarif ./... > govulncheck.sarif; EXIT_CODE=$?
+          if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 3 ]; then
+            exit "$EXIT_CODE"
+          fi
 
       - name: Upload SARIF report
-        uses: github/codeql-action/upload-sarif@b8c54a29e01e42e6df5c5e2a9697f782e4c70745 # v4.1.0
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
