@@ -53,9 +53,8 @@ jobs:
 
       - name: Run govulncheck
         run: |
-          GOVULNCHECK_VERSION=$(tr -d ' \r\n' < .govulncheck-version)
-          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
-          govulncheck -format sarif ./... > govulncheck.sarif; EXIT_CODE=$?
+          EXIT_CODE=0
+          make govulncheck-sarif > govulncheck.sarif || EXIT_CODE=$?
           if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 3 ]; then
             exit "$EXIT_CODE"
           fi

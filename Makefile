@@ -48,6 +48,10 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 govulncheck: $(GOVULNCHECK) ## Run govulncheck for known vulnerabilities.
 	$(GOVULNCHECK) ./...
 
+.PHONY: govulncheck-sarif
+govulncheck-sarif: $(GOVULNCHECK) ## Run govulncheck with SARIF output to stdout.
+	@$(GOVULNCHECK) -format sarif ./...
+
 ##@ Build
 
 .PHONY: build
@@ -107,13 +111,13 @@ GOVULNCHECK_VERSION ?= $(shell tr -d ' \r\n' < $(GOVULNCHECK_VERSION_FILE))
 .PHONY: govulncheck-tool
 govulncheck-tool: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
 $(GOVULNCHECK): $(LOCALBIN) $(PROJECT_ROOT).govulncheck-version
-	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
+	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,v$(GOVULNCHECK_VERSION))
 
 define go-install-tool
 @[ -f "$(1)-$(3)" ] || { \
 set -e; \
 package=$(2)@$(3) ;\
-echo "Downloading $${package}" ;\
+echo "Downloading $${package}" >&2 ;\
 rm -f $(1) || true ;\
 GOBIN=$(LOCALBIN) go install $${package} ;\
 mv $(1) $(1)-$(3) ;\
