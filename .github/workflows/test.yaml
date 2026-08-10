@@ -6,12 +6,15 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
+  schedule:
+    - cron: '30 7 * * 1-5'
 
 permissions:
   contents: read
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -33,3 +36,35 @@ jobs:
           flags: unit-tests
           files: cover.out
           fail_ci_if_error: false
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run govulncheck
+        run: |
+          make govulncheck-tool
+          EXIT_CODE=0
+          make govulncheck-sarif > govulncheck.sarif || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 3 ]; then
+            exit "$EXIT_CODE"
+          fi
+          jq '(.runs[].tool.driver.rules[]?.properties.tags) |= unique' govulncheck.sarif > govulncheck-clean.sarif
+          mv govulncheck-clean.sarif govulncheck.sarif
+
+      - name: Upload SARIF report
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck
