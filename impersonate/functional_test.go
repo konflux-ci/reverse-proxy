@@ -207,6 +207,21 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(backend.last.Get("Impersonate-User")).To(BeEmpty())
 	})
 
+	It("strips K8s impersonation headers even in custom-target mode", func() {
+		backend, port := setupProxy("bob@example.com", "ops", nsListerCaddyfile)
+
+		httpGet(fmt.Sprintf("http://127.0.0.1:%d/api/namespaces", port), http.Header{
+			"Impersonate-User":  {"attacker@evil.com"},
+			"Impersonate-Group": {"cluster-admin"},
+			"Impersonate-Uid":   {"fake-uid"},
+		})
+
+		Expect(backend.last.Get("Impersonate-User")).To(BeEmpty())
+		Expect(backend.last.Get("Impersonate-Group")).To(BeEmpty())
+		Expect(backend.last.Get("Impersonate-Uid")).To(BeEmpty())
+		Expect(backend.last.Get("X-User")).To(Equal("bob@example.com"))
+	})
+
 	It("includes system:authenticated even when the auth proxy returns no groups", func() {
 		backend, port := setupProxy("carol@example.com", "", kubeImpersonationCaddyfile)
 

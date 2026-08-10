@@ -126,6 +126,20 @@ func TestEmptyUserReturns401(t *testing.T) {
 	g.Expect(got.called).To(gomega.BeFalse(), "next handler should not be called")
 }
 
+func TestWhitespaceOnlyUserReturns401(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	h := &Handler{}
+	provision(t, h)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Auth-Request-Email", "   ")
+
+	got := serve(t, h, r)
+	g.Expect(got.status).To(gomega.Equal(http.StatusUnauthorized))
+	g.Expect(got.called).To(gomega.BeFalse(), "next handler should not be called")
+}
+
 func TestCustomTargetHeaders(t *testing.T) {
 	g := gomega.NewWithT(t)
 
@@ -140,6 +154,37 @@ func TestCustomTargetHeaders(t *testing.T) {
 	g.Expect(got.header.Values("X-Group")).To(gomega.Equal(
 		[]string{"devs", "ops", "system:authenticated"}))
 	g.Expect(got.header.Get("Impersonate-User")).To(gomega.BeEmpty())
+}
+
+func TestCustomTargetStillStripsK8sHeaders(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	h := &Handler{
+		TargetUser:  "X-User",
+		TargetGroup: "X-Group",
+	}
+	provision(t, h)
+
+	r := newRequest("alice@example.com", "devs")
+	r.Header.Set("Impersonate-User", "attacker@evil.com")
+	r.Header.Set("Impersonate-Group", "cluster-admin")
+	r.Header.Set("Impersonate-Uid", "fake-uid")
+
+	got := serve(t, h, r)
+	g.Expect(got.header.Get("Impersonate-User")).To(gomega.BeEmpty())
+	g.Expect(got.header.Get("Impersonate-Group")).To(gomega.BeEmpty())
+	g.Expect(got.header.Get("Impersonate-Uid")).To(gomega.BeEmpty())
+	g.Expect(got.header.Get("X-User")).To(gomega.Equal("alice@example.com"))
+}
+
+func TestSourceTargetOverlapRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	h := &Handler{
+		SourceUser: "Impersonate-User",
+		TargetUser: "Impersonate-User",
+	}
+	g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("must not be the same")))
 }
 
 func TestAlwaysIncludeEmpty(t *testing.T) {

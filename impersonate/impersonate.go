@@ -55,6 +55,7 @@
 package impersonate
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -134,6 +135,13 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		h.AlwaysInclude = []string{"system:authenticated"}
 	}
 
+	if http.CanonicalHeaderKey(h.SourceUser) == http.CanonicalHeaderKey(h.TargetUser) {
+		return fmt.Errorf("source_user and target_user must not be the same header (%s)", h.SourceUser)
+	}
+	if http.CanonicalHeaderKey(h.SourceGroups) == http.CanonicalHeaderKey(h.TargetGroup) {
+		return fmt.Errorf("source_groups and target_group must not be the same header (%s)", h.SourceGroups)
+	}
+
 	return nil
 }
 
@@ -141,24 +149,30 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // target headers, and passes the request to the next handler.
 //
 // Processing order:
-//  1. Strip all impersonation headers (TargetUser, TargetGroup,
-//     Impersonate-Uid, and any Impersonate-Extra-* headers).
-//  2. If SourceUser is empty, reject the request with 401.
-//  3. Set TargetUser from SourceUser.
-//  4. Split SourceGroups by Separator, trim whitespace, skip empty values,
+//  1. Read source headers before any deletions.
+//  2. Strip all Kubernetes impersonation headers (Impersonate-User,
+//     Impersonate-Group, Impersonate-Uid, Impersonate-Extra-*) plus the
+//     configured TargetUser/TargetGroup if they differ from the K8s defaults.
+//  3. If SourceUser is empty or whitespace-only, reject with 401.
+//  4. Set TargetUser from SourceUser.
+//  5. Split SourceGroups by Separator, trim whitespace, skip empty values,
 //     and add each as an individual TargetGroup header.
-//  5. Append all AlwaysInclude groups as additional TargetGroup headers.
+//  6. Append all AlwaysInclude groups as additional TargetGroup headers.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	r.Header.Del(h.TargetUser)
-	r.Header.Del(h.TargetGroup)
+	user := strings.TrimSpace(r.Header.Get(h.SourceUser))
+	groupsRaw := r.Header.Get(h.SourceGroups)
+
+	r.Header.Del("Impersonate-User")
+	r.Header.Del("Impersonate-Group")
 	r.Header.Del("Impersonate-Uid")
 	for name := range r.Header {
 		if strings.HasPrefix(name, "Impersonate-Extra-") {
 			delete(r.Header, name)
 		}
 	}
+	r.Header.Del(h.TargetUser)
+	r.Header.Del(h.TargetGroup)
 
-	user := r.Header.Get(h.SourceUser)
 	if user == "" {
 		h.logger.Warn("source user header is empty, rejecting request",
 			zap.String("source_header", h.SourceUser))
@@ -167,7 +181,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 	r.Header.Set(h.TargetUser, user)
 
-	groupsRaw := r.Header.Get(h.SourceGroups)
 	if groupsRaw != "" {
 		for g := range strings.SplitSeq(groupsRaw, h.Separator) {
 			g = strings.TrimSpace(g)
