@@ -123,10 +123,10 @@ func httpGet(url string, extraHeaders ...http.Header) *http.Response {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	defer func() {
+	DeferCleanup(func() {
 		_, _ = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-	}()
+	})
 	return resp
 }
 
@@ -250,7 +250,7 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(groups[15]).To(Equal("system:authenticated"))
 	})
 
-	It("strips malicious client-supplied Impersonate-* headers before authentication", func() {
+	It("strips malicious client-supplied Impersonate-* headers before proxying", func() {
 		backend, port := setupProxy("eve@example.com", "devs", kubeImpersonationCaddyfile)
 
 		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), http.Header{
@@ -285,5 +285,27 @@ var _ = Describe("Impersonate handler functional tests", func() {
 
 		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+	})
+
+	It("ignores forged source headers when auth proxy provides the real identity", func() {
+		backend, port := setupProxy("real@example.com", "real-group", kubeImpersonationCaddyfile)
+
+		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), http.Header{
+			"X-Auth-Request-Email":  {"forged@evil.com"},
+			"X-Auth-Request-Groups": {"cluster-admin"},
+		})
+
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("real@example.com"))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"real-group", "system:authenticated"}))
+	})
+
+	It("strips source headers from the outgoing request to the backend", func() {
+		backend, port := setupProxy("alice@example.com", "devs", kubeImpersonationCaddyfile)
+
+		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
+
+		Expect(backend.last.Get("X-Auth-Request-Email")).To(BeEmpty())
+		Expect(backend.last.Get("X-Auth-Request-Groups")).To(BeEmpty())
 	})
 })

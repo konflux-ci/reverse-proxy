@@ -110,9 +110,10 @@ With defaults (Kubernetes API impersonation):
 
 ```caddyfile
 route {
-    # Strip source headers before forward_auth so a malicious client
-    # cannot spoof an identity when the auth proxy omits the header
-    # from its response (forward_auth only overwrites if present).
+    # Defense-in-depth: strip source headers before forward_auth.
+    # On Caddy v2.11.4+ copy_headers deletes the client value before
+    # re-setting from the auth response, but these directives protect
+    # older versions and non-forward_auth deployments.
     request_header -X-Auth-Request-Email
     request_header -X-Auth-Request-Groups
 
@@ -129,6 +130,7 @@ With custom target headers (e.g. for namespace-lister):
 
 ```caddyfile
 route {
+    # Defense-in-depth (see note above)
     request_header -X-Auth-Request-Email
     request_header -X-Auth-Request-Groups
 

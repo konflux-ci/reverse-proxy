@@ -1,6 +1,7 @@
 package impersonate
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -46,13 +47,19 @@ type serveResult struct {
 
 func serve(t *testing.T, h *Handler, r *http.Request) serveResult {
 	t.Helper()
-	g := gomega.NewWithT(t)
 	w := httptest.NewRecorder()
 	next := &captureNext{}
-	g.Expect(h.ServeHTTP(w, r, next)).To(gomega.Succeed())
+	err := h.ServeHTTP(w, r, next)
+	status := w.Code
+	if err != nil {
+		var handlerErr caddyhttp.HandlerError
+		if errors.As(err, &handlerErr) {
+			status = handlerErr.StatusCode
+		}
+	}
 	return serveResult{
 		header: next.header,
-		status: w.Code,
+		status: status,
 		called: next.header != nil,
 	}
 }
@@ -191,11 +198,50 @@ func TestCustomTargetStillStripsK8sHeaders(t *testing.T) {
 func TestSourceTargetOverlapRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	h := &Handler{
-		SourceUser: "Impersonate-User",
-		TargetUser: "Impersonate-User",
-	}
-	g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("must not be the same")))
+	t.Run("SourceUser == TargetUser", func(*testing.T) {
+		h := &Handler{
+			SourceUser: "X-Identity",
+			TargetUser: "X-Identity",
+		}
+		g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("must not be the same")))
+	})
+
+	t.Run("SourceGroups == TargetGroup", func(*testing.T) {
+		h := &Handler{
+			SourceGroups: "X-Groups",
+			TargetGroup:  "X-Groups",
+		}
+		g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("must not be the same")))
+	})
+
+	t.Run("cross-field: SourceUser == TargetGroup", func(*testing.T) {
+		h := &Handler{
+			SourceUser:  "X-Shared",
+			TargetGroup: "X-Shared",
+		}
+		g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("must not be the same")))
+	})
+}
+
+func TestReservedImpersonateHeaderRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	t.Run("source_user is Impersonate-Uid", func(*testing.T) {
+		h := &Handler{SourceUser: "Impersonate-Uid"}
+		g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("reserved Impersonate-*")))
+	})
+
+	t.Run("source_groups is Impersonate-Extra-Scopes", func(*testing.T) {
+		h := &Handler{SourceGroups: "Impersonate-Extra-Scopes"}
+		g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("reserved Impersonate-*")))
+	})
+}
+
+func TestAlwaysIncludeEmptyEntryRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	h := &Handler{AlwaysInclude: []string{"valid", ""}}
+	g.Expect(h.Provision(caddy.Context{})).To(gomega.MatchError(gomega.ContainSubstring("empty or whitespace-only")))
 }
 
 func TestAlwaysIncludeEmpty(t *testing.T) {
