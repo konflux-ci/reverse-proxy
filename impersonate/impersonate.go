@@ -27,6 +27,12 @@
 // Kubernetes API impersonation with defaults (zero config):
 //
 //	route {
+//	    # Strip source headers before forward_auth so a malicious client
+//	    # cannot spoof an identity when the auth proxy omits the header
+//	    # from its response (forward_auth only overwrites if present).
+//	    request_header -X-Auth-Request-Email
+//	    request_header -X-Auth-Request-Groups
+//
 //	    forward_auth 127.0.0.1:6000 {
 //	        uri /oauth2/auth
 //	        copy_headers X-Auth-Request-Email X-Auth-Request-Groups
