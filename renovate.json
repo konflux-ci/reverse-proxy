@@ -7,5 +7,14 @@
         "enabled": false
       }
     ]
-  }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.govulncheck-version$"],
+      "matchStrings": ["(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\s"],
+      "depNameTemplate": "golang.org/x/vuln",
+      "datasourceTemplate": "go"
+    }
+  ]
 }

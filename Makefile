@@ -44,6 +44,10 @@ lint: golangci-lint ## Run golangci-lint linter.
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes.
 	$(GOLANGCI_LINT) run --fix
 
+.PHONY: govulncheck
+govulncheck: $(GOVULNCHECK) ## Run govulncheck for known vulnerabilities.
+	$(GOVULNCHECK) ./...
+
 ##@ Build
 
 .PHONY: build
@@ -91,6 +95,19 @@ GOLANGCI_LINT_VERSION ?= $(shell tr -d ' \r\n' < $(GOLANGCI_LINT_VERSION_FILE))
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN) $(PROJECT_ROOT).golangci-lint-version
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+GOVULNCHECK = $(LOCALBIN)/govulncheck
+
+GOVULNCHECK_VERSION_FILE := $(PROJECT_ROOT).govulncheck-version
+ifeq ($(wildcard $(GOVULNCHECK_VERSION_FILE)),)
+$(error Missing $(GOVULNCHECK_VERSION_FILE). It must live next to the Makefile.)
+endif
+GOVULNCHECK_VERSION ?= $(shell tr -d ' \r\n' < $(GOVULNCHECK_VERSION_FILE))
+
+.PHONY: govulncheck-tool
+govulncheck-tool: $(GOVULNCHECK) ## Download govulncheck locally if necessary.
+$(GOVULNCHECK): $(LOCALBIN) $(PROJECT_ROOT).govulncheck-version
+	$(call go-install-tool,$(GOVULNCHECK),golang.org/x/vuln/cmd/govulncheck,$(GOVULNCHECK_VERSION))
 
 define go-install-tool
 @[ -f "$(1)-$(3)" ] || { \
