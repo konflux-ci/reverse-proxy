@@ -204,7 +204,7 @@ func (fw *FileWatcher) watchLoop(initialWatcher *fsnotify.Watcher) {
 
 	for {
 		exited := fw.runWatcher(watcher)
-		watcher.Close() //nolint:errcheck
+		watcher.Close() //nolint:errcheck,gosec // best-effort cleanup before recreating watcher
 
 		if exited {
 			return
