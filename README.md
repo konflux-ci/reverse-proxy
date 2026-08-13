@@ -250,6 +250,11 @@ cached file is absent — using `default` prevents Caddy from crashing on startu
 
 ---
 
+## Installation
+
+Published image for Konflux UI: `quay.io/konflux-ci/reverse-proxy:latest` (Makefile `IMG` default).
+Build from this repo: [Building](#building).
+
 ## Building
 
 No `xcaddy` required. The build follows the
