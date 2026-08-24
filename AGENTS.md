@@ -159,6 +159,21 @@ make lint-fix           # runs golangci-lint with --fix
   `gocyclo`, `dupl`, `lll`, `misspell`, `unused`, `unparam`
 - Formatters: `gofmt`, `goimports`
 
+## Single-file verification
+
+After a small Go change, lint and vet the **package you edited** (not the whole repo).
+
+1. Read the pinned golangci-lint version from `.golangci-lint-version`.
+2. If `bin/` has no `golangci-lint-<that version>` binary, run `make golangci-lint`.
+3. Run `./bin/golangci-lint-<version> run <package-dir>/` and `go vet <package-dir>/`.
+
+Example (replace the package path with the one you changed):
+
+```bash
+./bin/golangci-lint run ./impersonate/
+go vet ./impersonate/
+```
+
 ## CI Pipelines
 
 ### GitHub Actions
