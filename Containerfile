@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # Minimal runtime for statically compiled binaries (Go/Rust/C/C++).
 # Includes only CA certs, timezone data, and a non-root user.
 # No shell, package manager, or C library is included.
-FROM registry.access.redhat.com/hi/static@sha256:e6e00bcc3803b2faf7de0b08af2e1b21b155da6c891e153caafd99999c083ee1
+FROM registry.access.redhat.com/hi/static@sha256:41595122bb70793cd58c9e22f625b5c557e4459c43235cbca5c117d057a11424
 WORKDIR /
 COPY --from=builder /opt/app-root/caddy /usr/bin/caddy
 COPY LICENSE /licenses/
