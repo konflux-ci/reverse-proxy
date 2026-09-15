@@ -91,10 +91,14 @@ sets them as individual impersonation headers on the request.
 
 **What it does:**
 
-1. Reads `X-Auth-Request-Email` and sets it as `Impersonate-User`
-2. Reads `X-Auth-Request-Groups` (comma-separated), splits it, and adds each
+1. Strips all Kubernetes impersonation headers (`Impersonate-User`,
+   `Impersonate-Group`, `Impersonate-Uid`, `Impersonate-Extra-*`) and the
+   source identity headers from the request
+2. Rejects the request with 401 if the source user header is empty
+3. Reads `X-Auth-Request-Email` and sets it as `Impersonate-User`
+4. Reads `X-Auth-Request-Groups` (comma-separated), splits it, and adds each
    value as a separate `Impersonate-Group` header
-3. Always appends `system:authenticated` (configurable)
+5. Always appends `system:authenticated` (configurable)
 
 #### Caddyfile syntax
 
@@ -106,6 +110,13 @@ With defaults (Kubernetes API impersonation):
 
 ```caddyfile
 route {
+    # Defense-in-depth: strip source headers before forward_auth.
+    # On Caddy v2.11.4+ copy_headers deletes the client value before
+    # re-setting from the auth response, but these directives protect
+    # older versions and non-forward_auth deployments.
+    request_header -X-Auth-Request-Email
+    request_header -X-Auth-Request-Groups
+
     forward_auth 127.0.0.1:6000 {
         uri /oauth2/auth
         copy_headers X-Auth-Request-Email X-Auth-Request-Groups
@@ -119,6 +130,10 @@ With custom target headers (e.g. for namespace-lister):
 
 ```caddyfile
 route {
+    # Defense-in-depth (see note above)
+    request_header -X-Auth-Request-Email
+    request_header -X-Auth-Request-Groups
+
     forward_auth 127.0.0.1:6000 {
         uri /oauth2/auth
         copy_headers X-Auth-Request-Email X-Auth-Request-Groups
