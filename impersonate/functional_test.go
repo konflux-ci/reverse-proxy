@@ -295,4 +295,15 @@ var _ = Describe("Impersonate handler functional tests", func() {
 			[]string{"devs", "system:authenticated"}))
 		Expect(backend.last.Get("Authorization")).To(BeEmpty())
 	})
+
+	It("returns 401 when the auth response omits Authorization and the client supplies a JWT", func() {
+		backend, port := setupProxy("carol@example.com", "", kubeImpersonationCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
+			"Authorization": bearerGroups([]string{"forged-group"}),
+		})
+
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(backend.last).To(BeNil())
+	})
 })

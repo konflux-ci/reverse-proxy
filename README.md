@@ -17,7 +17,10 @@ that encoding is ambiguous: a group whose name contains a comma is the same
 bytes as two groups. Dex already stores the names in the ID token as a JSON
 array. This repo's `impersonate` handler reads that array and writes one
 header per group. It also drops reserved and platform-admin groups such as
-`system:masters`.
+`system:masters`. The handler does not verify the token. It is designed to
+run after an authentication proxy, and it relies on that proxy for
+verification. `forward_auth` must copy the proxy's `Authorization` response
+header so the client-supplied value is replaced first.
 
 ## Architecture: Dynamic File Rotation Without a Sidecar
 
@@ -89,14 +92,23 @@ the pod's entire lifetime.
 HTTP handler middleware that reads the authenticated user and the ID token's
 `groups` array, then sets individual impersonation headers on the request.
 
+The handler is designed to run after an authentication proxy such as
+oauth2-proxy. The proxy verifies the JWT. This handler does not check the
+signature, issuer, or audience. `forward_auth` must include the token header
+in `copy_headers`. Caddy deletes the client-supplied value and copies the
+proxy's verified token onto the request before `impersonate` reads it. A
+route that skips that copy accepts a client-supplied compact JWT as the
+group list.
+
 **What it does:**
 
 1. Reads `X-Auth-Request-Email` and sets it as `Impersonate-User`
 2. Reads `Authorization: Bearer <id_token>` (or a compact JWT with no
-   prefix), decodes the payload, and adds each string in the `groups` claim
-   as a separate `Impersonate-Group` header. The signature is not checked;
-   oauth2-proxy already verified the token. The header is removed afterward
-   so the JWT is not proxied.
+   prefix) that `forward_auth` copied from the authentication proxy, decodes
+   the payload, and adds each string in the `groups` claim as a separate
+   `Impersonate-Group` header. The handler does not verify the token; the
+   proxy already did. The header is removed afterward so the JWT is not
+   proxied.
 3. Drops groups prefixed with `system:` except the exact group
    `system:authenticated`, and drops `kubeadm:cluster-admins`,
    `cluster-admins`, and `dedicated-admins`. A dropped group does not fail
@@ -111,10 +123,10 @@ HTTP handler middleware that reads the authenticated user and the ID token's
    means no groups from the token.
 
 `token_groups off` skips the ID token. The handler still copies the user,
-deletes any client-supplied group headers, and sends only `always_include`.
-It does not read `Authorization`. `source_id_token` and `groups_claim` cannot
-be set in that mode. `source_groups` and `separator` are rejected at load
-time.
+deletes any client-supplied group headers, deletes `Authorization`, and
+sends only `always_include`. It does not read or require `Authorization`.
+`source_id_token` and `groups_claim` are rejected in that mode.
+`source_groups` and `separator` are rejected at load time.
 
 #### Caddyfile syntax
 
@@ -156,8 +168,8 @@ route {
 | Option | Default | Description |
 |--------|---------|-------------|
 | `source_user` | `X-Auth-Request-Email` | Header containing the user identity |
-| `source_id_token` | `Authorization` | Header containing the ID token. Ignored when `token_groups` is `off` |
-| `groups_claim` | `groups` | JWT claim holding a JSON array of group names. Ignored when `token_groups` is `off` |
+| `source_id_token` | `Authorization` | Header containing the ID token. Rejected when `token_groups` is `off` |
+| `groups_claim` | `groups` | JWT claim holding a JSON array of group names. Rejected when `token_groups` is `off` |
 | `target_user` | `Impersonate-User` | Header name to set for the user |
 | `target_group` | `Impersonate-Group` | Header name to add for each group |
 | `always_include` | `system:authenticated` | Groups always appended (space-separated list) |
