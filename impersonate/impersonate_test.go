@@ -444,8 +444,8 @@ func TestTokenGroupsOffSkipsToken(t *testing.T) {
 	g.Expect(got.Get("Impersonate-User")).To(gomega.Equal("alice@example.com"))
 	g.Expect(got.Values("Impersonate-Group")).To(gomega.Equal(
 		[]string{"system:authenticated"}))
-	g.Expect(got.Get("Authorization")).To(gomega.Equal(r.Header.Get("Authorization")))
-	g.Expect(r.Header.Get("Authorization")).To(gomega.HavePrefix("Bearer "))
+	g.Expect(got.Get("Authorization")).To(gomega.BeEmpty())
+	g.Expect(r.Header.Get("Authorization")).To(gomega.BeEmpty())
 }
 
 func TestTokenGroupsOffMissingAuthorizationSucceeds(t *testing.T) {

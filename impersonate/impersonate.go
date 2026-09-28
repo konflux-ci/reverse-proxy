@@ -9,10 +9,15 @@
 // array, and oauth2-proxy puts that raw token on the /oauth2/auth response
 // as Authorization: Bearer <id_token> when --set-authorization-header is set.
 //
-// The handler does not verify the token. oauth2-proxy already did. The
-// deployment must copy Authorization from forward_auth, which replaces any
-// client-supplied value. After the handler reads the token it deletes that
-// header, including when parsing fails, so the JWT is not proxied upstream.
+// The handler is designed to run immediately after an authentication proxy
+// such as oauth2-proxy, and it relies on that proxy to verify the JWT. This
+// code does not check the signature, issuer, or audience. The Caddy route
+// must list the token header in forward_auth copy_headers. Caddy then
+// deletes the client-supplied value and copies the proxy's verified token
+// onto the request before this handler reads it. A route that skips that
+// copy accepts a client-supplied compact JWT as the group list. After the
+// handler reads the token it deletes that header, including when parsing
+// fails, so the JWT is not proxied upstream.
 //
 // Groups with the prefix system: are dropped, except the exact group
 // system:authenticated. The exact groups kubeadm:cluster-admins,
@@ -22,9 +27,10 @@
 // provisioned. The default always_include value is system:authenticated,
 // and a group that is already present is not added again.
 //
-// token_groups off skips the ID token. The handler still copies the user
-// and sends only always_include. It does not read or require Authorization.
-// source_groups and separator are rejected when the Caddyfile is loaded.
+// token_groups off skips the ID token. The handler still copies the user,
+// sends only always_include, and deletes Authorization so a client bearer
+// is not proxied. It does not require Authorization. source_groups and
+// separator are rejected when the Caddyfile is loaded.
 //
 // # Caddyfile Usage
 //
@@ -83,6 +89,9 @@ func init() {
 
 // Handler is a Caddy HTTP middleware that reads a user identity and an ID
 // token and sets impersonation headers before passing the request on.
+// It is designed to run after an authentication proxy. The proxy verifies
+// the JWT; this handler only reads the groups claim from the header that
+// forward_auth copied out of the proxy's response.
 type Handler struct {
 	// Header containing the authenticated user's identity (email).
 	// Default: X-Auth-Request-Email
@@ -91,11 +100,11 @@ type Handler struct {
 	// Header containing the ID token. A leading "Bearer " prefix is stripped
 	// once; the remainder is the compact JWT. A value with no prefix is the
 	// compact JWT itself.
-	// Default: Authorization. Ignored when token groups are off.
+	// Default: Authorization. Rejected when token groups are off.
 	SourceIDToken string `json:"source_id_token,omitempty"`
 
 	// JWT claim that holds the group names as a JSON array of strings.
-	// Default: groups. Ignored when token groups are off.
+	// Default: groups. Rejected when token groups are off.
 	GroupsClaim string `json:"groups_claim,omitempty"`
 
 	// Header name to set for the user identity.
@@ -166,8 +175,11 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 // ServeHTTP copies the user, reads groups from the ID token unless
 // token_groups is off, and passes the request to the next handler.
-// A missing or malformed token returns 401. The token header is removed
-// before the next handler runs and before that error is returned.
+// The token header is expected to be the value forward_auth copied from
+// the authentication proxy. This handler does not verify it. A missing or
+// malformed token returns 401. The token header is removed before the next
+// handler runs and before that error is returned. token_groups off does
+// not read the token, and still removes Authorization.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	if user := r.Header.Get(h.SourceUser); user != "" {
 		r.Header.Set(h.TargetUser, user)
@@ -183,6 +195,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			h.logger.Warn("failed to read groups from ID token", zap.Error(err))
 			return caddyhttp.Error(http.StatusUnauthorized, err)
 		}
+	} else {
+		// SourceIDToken stays empty in this mode, so the header to drop is
+		// the default bearer header rather than the configured name.
+		r.Header.Del("Authorization")
 	}
 
 	h.writeGroups(r, tokenGroups)
@@ -315,8 +331,10 @@ var (
 
 // groupsFromToken decodes the compact JWT in raw and returns the string
 // array stored under claim. One leading "Bearer " prefix is removed. A value
-// with no prefix is the compact JWT itself. The signature is not verified.
-// An absent claim or JSON null returns no groups and a nil error.
+// with no prefix is the compact JWT itself. It does not verify the token:
+// the authentication proxy already did, and raw must be the header that
+// proxy returned. An absent claim or JSON null returns no groups and a nil
+// error.
 func groupsFromToken(raw, claim string) ([]string, error) {
 	if raw == "" {
 		return nil, errMissingIDToken
