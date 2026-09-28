@@ -7,15 +7,16 @@ A custom [Caddy](https://caddyserver.com/) build with three plugins for the
 the browser and the Kubernetes API server, translating OAuth2 authentication
 headers into Kubernetes impersonation headers.
 
-The core problem: `oauth2-proxy` returns groups in a single comma-separated
-`X-Auth-Request-Groups` header, but Kubernetes requires each group as a
-**separate** `Impersonate-Group` header. Stock Caddy cannot do this.
+The core problem: Kubernetes requires each group as a **separate**
+`Impersonate-Group` header. oauth2-proxy's comma-joined groups header cannot
+represent a group name that contains a comma. Dex puts the same names in the
+ID token as a JSON array, and this proxy reads that array.
 
 ## Repository Layout
 
 ```
 cmd/caddy/          Entry point — registers plugins, calls caddycmd.Main()
-impersonate/        Plugin: splits auth headers → K8s impersonation headers
+impersonate/        Plugin: ID-token groups → K8s impersonation headers
 certwatcher/        Plugin: watches TLS certs on disk, rotates without reload
 filewatcher/        Plugin: watches dirs (SIGUSR1 reload) + caches file content
 scripts/            Helper scripts for Kind cluster testing
@@ -43,12 +44,18 @@ Kubernetes symlink rotations.
 
 ### impersonate (`http.handlers.impersonate`)
 
-- Source: `impersonate/impersonate.go` (~240 lines)
+- Source: `impersonate/impersonate.go`
 - Reads `X-Auth-Request-Email` → sets `Impersonate-User`
-- Reads `X-Auth-Request-Groups` (comma-separated) → splits into separate
-  `Impersonate-Group` headers
-- Always appends `system:authenticated` (configurable)
-- Supports custom source/target headers and separators
+- Reads the ID token from `Authorization` (configurable), decodes the
+  `groups` JSON array, and writes each remaining name as a separate
+  `Impersonate-Group` header. Does not verify the signature.
+- Drops `system:` groups except exact `system:authenticated`, plus
+  `kubeadm:cluster-admins`, `cluster-admins`, and `dedicated-admins`
+- Appends `system:authenticated` (configurable). `always_include` entries
+  the denylist would drop fail provisioning
+- `token_groups off` skips the token and sends only `always_include`.
+  `source_groups` and `separator` fail at load time
+- Deletes the token header before proxying and before returning 401
 - Caddy interfaces: `caddy.Provisioner`, `caddyhttp.MiddlewareHandler`,
   `caddyfile.Unmarshaler`
 
