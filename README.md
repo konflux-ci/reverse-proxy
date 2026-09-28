@@ -11,13 +11,13 @@ authentication response into Kubernetes
 [impersonation headers](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#user-impersonation)
 (`Impersonate-User`, `Impersonate-Group`).
 
-The challenge is that `oauth2-proxy` returns all groups in a **single
-comma-separated** `X-Auth-Request-Groups` header, but the Kubernetes API
-requires each group as a **separate** `Impersonate-Group` header.
-
-Stock Caddy cannot split one header value into multiple headers. This repo
-provides the `impersonate` handler plugin that does exactly that, with no
-arbitrary group limit and no empty-header side effects.
+The Kubernetes API requires each group as a **separate** `Impersonate-Group`
+header. `oauth2-proxy` can put those names in one comma-separated header, but
+that encoding is ambiguous: a group whose name contains a comma is the same
+bytes as two groups. Dex already stores the names in the ID token as a JSON
+array. This repo's `impersonate` handler reads that array and writes one
+header per group. It also drops reserved and platform-admin groups such as
+`system:masters`.
 
 ## Architecture: Dynamic File Rotation Without a Sidecar
 
@@ -86,15 +86,35 @@ the pod's entire lifetime.
 
 ### `impersonate`
 
-HTTP handler middleware that reads user/group headers from an auth proxy and
-sets them as individual impersonation headers on the request.
+HTTP handler middleware that reads the authenticated user and the ID token's
+`groups` array, then sets individual impersonation headers on the request.
 
 **What it does:**
 
 1. Reads `X-Auth-Request-Email` and sets it as `Impersonate-User`
-2. Reads `X-Auth-Request-Groups` (comma-separated), splits it, and adds each
-   value as a separate `Impersonate-Group` header
-3. Always appends `system:authenticated` (configurable)
+2. Reads `Authorization: Bearer <id_token>` (or a compact JWT with no
+   prefix), decodes the payload, and adds each string in the `groups` claim
+   as a separate `Impersonate-Group` header. The signature is not checked;
+   oauth2-proxy already verified the token. The header is removed afterward
+   so the JWT is not proxied.
+3. Drops groups prefixed with `system:` except the exact group
+   `system:authenticated`, and drops `kubeadm:cluster-admins`,
+   `cluster-admins`, and `dedicated-admins`. A dropped group does not fail
+   the request. `System:masters` is kept, because Kubernetes treats it as a
+   different group from `system:masters`.
+4. Appends `system:authenticated` (configurable via `always_include`). A
+   group that is already present is not added again. An `always_include`
+   entry the denylist would drop is rejected when Caddy loads the config.
+5. Returns 401 when the token header is missing, the value is not a compact
+   JWT, the payload is not a JSON object, or the group claim is present but
+   is not an array of non-empty strings. A missing claim or JSON `null`
+   means no groups from the token.
+
+`token_groups off` skips the ID token. The handler still copies the user,
+deletes any client-supplied group headers, and sends only `always_include`.
+It does not read `Authorization`. `source_id_token` and `groups_claim` cannot
+be set in that mode. `source_groups` and `separator` are rejected at load
+time.
 
 #### Caddyfile syntax
 
@@ -108,7 +128,7 @@ With defaults (Kubernetes API impersonation):
 route {
     forward_auth 127.0.0.1:6000 {
         uri /oauth2/auth
-        copy_headers X-Auth-Request-Email X-Auth-Request-Groups
+        copy_headers X-Auth-Request-Email Authorization
     }
     impersonate
     reverse_proxy https://kubernetes.default.svc { ... }
@@ -121,7 +141,7 @@ With custom target headers (e.g. for namespace-lister):
 route {
     forward_auth 127.0.0.1:6000 {
         uri /oauth2/auth
-        copy_headers X-Auth-Request-Email X-Auth-Request-Groups
+        copy_headers X-Auth-Request-Email Authorization
     }
     impersonate {
         target_user  X-User
@@ -136,11 +156,12 @@ route {
 | Option | Default | Description |
 |--------|---------|-------------|
 | `source_user` | `X-Auth-Request-Email` | Header containing the user identity |
-| `source_groups` | `X-Auth-Request-Groups` | Header containing comma-separated groups |
+| `source_id_token` | `Authorization` | Header containing the ID token. Ignored when `token_groups` is `off` |
+| `groups_claim` | `groups` | JWT claim holding a JSON array of group names. Ignored when `token_groups` is `off` |
 | `target_user` | `Impersonate-User` | Header name to set for the user |
 | `target_group` | `Impersonate-Group` | Header name to add for each group |
 | `always_include` | `system:authenticated` | Groups always appended (space-separated list) |
-| `separator` | `,` | Delimiter for splitting the source groups header |
+| `token_groups` | `on` | `off` skips the ID token and sends only `always_include` |
 
 ### `certwatcher`
 
