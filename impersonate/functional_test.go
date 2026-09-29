@@ -201,6 +201,53 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 `, adminPort, listenPort, authAddr, backendAddr)
 }
 
+// emailOnlyForwardAuthCaddyfile copies the user but not Authorization.
+// The client JWT therefore reaches impersonate and becomes the group source.
+func emailOnlyForwardAuthCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
+	return fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+}
+
+:%d {
+	route {
+		forward_auth %s {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-Email
+		}
+
+		impersonate
+
+		reverse_proxy %s
+	}
+}
+`, adminPort, listenPort, authAddr, backendAddr)
+}
+
+// tokenGroupsOffCaddyfile still copies the ID token, then tells impersonate
+// not to read it. The handler must drop Authorization and send only the
+// configured always_include groups.
+func tokenGroupsOffCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
+	return fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+}
+
+:%d {
+	route {
+		forward_auth %s {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-Email Authorization
+		}
+
+		impersonate {
+			token_groups off
+		}
+
+		reverse_proxy %s
+	}
+}
+`, adminPort, listenPort, authAddr, backendAddr)
+}
+
 var _ = Describe("Impersonate handler functional tests", func() {
 	// Each test spins up a real Caddy instance configured with the full
 	// forward_auth → impersonate → reverse_proxy chain, an auth mock
@@ -305,5 +352,36 @@ var _ = Describe("Impersonate handler functional tests", func() {
 
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 		Expect(backend.last).To(BeNil())
+	})
+
+	It("uses the client JWT as the group source when copy_headers omits Authorization", func() {
+		backend, port := setupProxy("carol@example.com", "", emailOnlyForwardAuthCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
+			"Authorization": bearerGroups([]string{"client-supplied"}),
+		})
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("carol@example.com"))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"client-supplied", "system:authenticated"}))
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
+	})
+
+	It("strips Authorization and skips token groups when token_groups is off", func() {
+		backend, port := setupProxy(
+			"frank@example.com",
+			bearerGroups([]string{"should-not-appear"}),
+			tokenGroupsOffCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
+			"Authorization": bearerGroups([]string{"client-supplied"}),
+		})
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("frank@example.com"))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"system:authenticated"}))
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
 	})
 })
