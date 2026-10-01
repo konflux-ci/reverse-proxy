@@ -194,7 +194,7 @@ go vet ./impersonate/
 
 ### Go style
 
-- Go 1.25+ (check `go.mod` for exact version)
+- Go 1.27+ (check `go.mod` for exact version)
 - `CGO_ENABLED=0` — static binaries, no C dependencies
 - All plugins follow the Caddy module pattern:
   1. Define a struct with JSON tags
