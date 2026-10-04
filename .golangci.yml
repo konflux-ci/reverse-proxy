@@ -29,6 +29,10 @@ linters:
   exclusions:
     generated: lax
     rules:
+      # Repeated fixture strings in tests are intentional, not duplication debt.
+      - path: _test\.go
+        linters:
+          - goconst
       # G104: unhandled errors in test cleanup (defer Close)
       # G301: test temp directories use 0755
       # G306: test temp files use 0644 (e.g. certs, CA bundles)
