@@ -59,7 +59,13 @@ jobs:
           if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 3 ]; then
             exit "$EXIT_CODE"
           fi
-          jq '(.runs[].tool.driver.rules[]?.properties.tags) |= unique' govulncheck.sarif > govulncheck-clean.sarif
+          jq '
+            (.runs[].tool.driver.rules[]?.properties.tags) |= (if type == "array" then unique else . end) |
+            (.runs[].results[]?) |= (
+              (if (.stacks | type) == "array" then .stacks |= unique else . end) |
+              (if (.codeFlows | type) == "array" then .codeFlows |= unique else . end)
+            )
+          ' govulncheck.sarif > govulncheck-clean.sarif
           mv govulncheck-clean.sarif govulncheck.sarif
 
       - name: Upload SARIF report
