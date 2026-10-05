@@ -7,15 +7,16 @@ A custom [Caddy](https://caddyserver.com/) build with three plugins for the
 the browser and the Kubernetes API server, translating OAuth2 authentication
 headers into Kubernetes impersonation headers.
 
-The core problem: `oauth2-proxy` returns groups in a single comma-separated
-`X-Auth-Request-Groups` header, but Kubernetes requires each group as a
-**separate** `Impersonate-Group` header. Stock Caddy cannot do this.
+The core problem: Kubernetes requires each group as a **separate**
+`Impersonate-Group` header. oauth2-proxy's comma-joined groups header cannot
+represent a group name that contains a comma. Dex puts the same names in the
+ID token as a JSON array, and this proxy reads that array.
 
 ## Repository Layout
 
 ```
 cmd/caddy/          Entry point — registers plugins, calls caddycmd.Main()
-impersonate/        Plugin: splits auth headers → K8s impersonation headers
+impersonate/        Plugin: ID-token groups → K8s impersonation headers
 certwatcher/        Plugin: watches TLS certs on disk, rotates without reload
 filewatcher/        Plugin: watches dirs (SIGUSR1 reload) + caches file content
 scripts/            Helper scripts for Kind cluster testing
@@ -43,12 +44,22 @@ Kubernetes symlink rotations.
 
 ### impersonate (`http.handlers.impersonate`)
 
-- Source: `impersonate/impersonate.go` (~240 lines)
+- Source: `impersonate/impersonate.go`
 - Reads `X-Auth-Request-Email` → sets `Impersonate-User`
-- Reads `X-Auth-Request-Groups` (comma-separated) → splits into separate
-  `Impersonate-Group` headers
-- Always appends `system:authenticated` (configurable)
-- Supports custom source/target headers and separators
+- Designed to run after an authentication proxy. The proxy verifies the
+  JWT. This handler does not. The route must list the token header in
+  `forward_auth` `copy_headers` so Caddy replaces the client value first
+- Reads that ID token from `Authorization` (configurable), decodes the
+  `groups` JSON array, and writes each remaining name as a separate
+  `Impersonate-Group` header
+- Drops `system:` groups except exact `system:authenticated`, plus
+  `kubeadm:cluster-admins`, `cluster-admins`, and `dedicated-admins`
+- Appends `system:authenticated` (configurable). `always_include` entries
+  the denylist would drop fail provisioning
+- `token_groups off` skips the token, deletes `Authorization`, and sends
+  only `always_include`. `source_id_token` and `groups_claim` are rejected
+  in that mode. `source_groups` and `separator` fail at load time
+- Deletes the token header before proxying and before returning 401
 - Caddy interfaces: `caddy.Provisioner`, `caddyhttp.MiddlewareHandler`,
   `caddyfile.Unmarshaler`
 
@@ -141,10 +152,23 @@ go test ./filewatcher/...
 
 ### When writing new tests
 
-- Use the same `gomega.NewWithT(t)` pattern, not raw `if` checks
+- Use the same `gomega.NewWithT(t)` pattern, not raw `if` checks.
+  Ginkgo specs in `functional_test.go` use the suite's `Expect`.
 - Test both the happy path and edge cases (empty values, whitespace, pre-existing headers)
-- For middleware, use the `captureNext` pattern to inspect the request after processing
-- Functional tests should start a real Caddy instance using `caddytest`
+- For middleware unit tests, use the `captureNext` pattern to inspect the request after processing
+- Prefer the narrowest test that can show the behavior. Add a functional or integration test only for an interaction a direct call cannot see.
+
+### Where a test goes
+
+| Kind | File | Put a test here when |
+|------|------|----------------------|
+| Unit | `*_test.go` in `package <plugin>` | The code produces the result from the inputs the test passes. Call the function or `ServeHTTP` directly with `httptest.NewRequest`. |
+| Functional | `functional_test.go` in `package <plugin>_test` (`filewatcher` also uses `functional_middleware_test.go`) | The result depends on another Caddy directive or on loading a Caddyfile. Start Caddy with the caddyfile adapter and `caddy.Load`, then send a real request through the chain. |
+| Integration | `integration_test.go` in `package <plugin>_test` | The scenario crosses a process or plugin boundary: files on disk, a separate TLS upstream, and a Caddy reload. Today this is CA-bundle rotation in `filewatcher/integration_test.go`. |
+
+HTTP handler example: a malformed token returns 401 from `ServeHTTP` alone, so that test belongs in `impersonate_test.go`. A client JWT is removed only because `forward_auth` `copy_headers` deletes it before `impersonate` runs. `ServeHTTP` alone would accept that JWT, so that test belongs in `impersonate/functional_test.go`.
+
+Kind cluster checks stay in `scripts/test-in-kind.sh`. They are not a Go test file.
 
 ## Linting
 

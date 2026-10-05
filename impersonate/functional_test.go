@@ -1,6 +1,7 @@
 package impersonate_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,20 +48,41 @@ func (h *headerCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // authMock simulates oauth2-proxy's /oauth2/auth endpoint. It returns 200
-// with X-Auth-Request-Email and X-Auth-Request-Groups response headers.
+// with X-Auth-Request-Email and Authorization: Bearer <id_token>.
 type authMock struct {
-	user   string
-	groups string
+	user          string
+	authorization string
 }
 
 func (a *authMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if a.user != "" {
 		w.Header().Set("X-Auth-Request-Email", a.user)
 	}
-	if a.groups != "" {
-		w.Header().Set("X-Auth-Request-Groups", a.groups)
+	if a.authorization != "" {
+		w.Header().Set("Authorization", a.authorization)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// bearerGroups builds an unverified compact JWT whose groups claim is the
+// given names, returned as an Authorization header value. The signature is
+// arbitrary; the handler does not check it.
+func bearerGroups(groups []string) string {
+	payload, err := json.Marshal(map[string][]string{"groups": groups})
+	Expect(err).NotTo(HaveOccurred())
+	return "Bearer " + compactJWT(payload)
+}
+
+// bearerClaims builds an Authorization value for an arbitrary JSON object.
+func bearerClaims(claims map[string]any) string {
+	payload, err := json.Marshal(claims)
+	Expect(err).NotTo(HaveOccurred())
+	return "Bearer " + compactJWT(payload)
+}
+
+func compactJWT(payload []byte) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"none"}`)) + "." + enc(payload) + ".sig"
 }
 
 // caddyfileBuilder generates a Caddyfile string given the admin port, listen
@@ -71,12 +93,12 @@ type caddyfileBuilder func(adminPort, listenPort int, authAddr, backendAddr stri
 // wired together with the given Caddyfile builder. It registers cleanup for
 // all three. Returns the backend (for header assertions) and the Caddy port
 // to send requests to.
-func setupProxy(user, groups string, buildCaddyfile caddyfileBuilder) (*headerCapture, int) {
+func setupProxy(user, authorization string, buildCaddyfile caddyfileBuilder) (*headerCapture, int) {
 	backend := &headerCapture{}
 	backendSrv := httptest.NewServer(backend)
 	DeferCleanup(backendSrv.Close)
 
-	authSrv := httptest.NewServer(&authMock{user: user, groups: groups})
+	authSrv := httptest.NewServer(&authMock{user: user, authorization: authorization})
 	DeferCleanup(authSrv.Close)
 
 	caddyPort := freePort()
@@ -130,7 +152,7 @@ func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
 
 // kubeImpersonationCaddyfile mirrors the Konflux production config: strip
 // client-supplied impersonation headers, authenticate via forward_auth,
-// translate groups with the impersonate handler, then proxy to the backend.
+// read groups from the ID token, then proxy to the backend.
 func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
 	return fmt.Sprintf(`{
 	admin 127.0.0.1:%d
@@ -143,7 +165,7 @@ func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr
 
 		forward_auth %s {
 			uri /oauth2/auth
-			copy_headers X-Auth-Request-Email X-Auth-Request-Groups
+			copy_headers X-Auth-Request-Email Authorization
 		}
 
 		impersonate
@@ -165,12 +187,59 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 	route {
 		forward_auth %s {
 			uri /oauth2/auth
-			copy_headers X-Auth-Request-Email X-Auth-Request-Groups
+			copy_headers X-Auth-Request-Email Authorization
 		}
 
 		impersonate {
 			target_user  X-User
 			target_group X-Group
+		}
+
+		reverse_proxy %s
+	}
+}
+`, adminPort, listenPort, authAddr, backendAddr)
+}
+
+// emailOnlyForwardAuthCaddyfile copies the user but not Authorization.
+// The client JWT therefore reaches impersonate and becomes the group source.
+func emailOnlyForwardAuthCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
+	return fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+}
+
+:%d {
+	route {
+		forward_auth %s {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-Email
+		}
+
+		impersonate
+
+		reverse_proxy %s
+	}
+}
+`, adminPort, listenPort, authAddr, backendAddr)
+}
+
+// tokenGroupsOffCaddyfile still copies the ID token, then tells impersonate
+// not to read it. The handler must drop Authorization and send only the
+// configured always_include groups.
+func tokenGroupsOffCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
+	return fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+}
+
+:%d {
+	route {
+		forward_auth %s {
+			uri /oauth2/auth
+			copy_headers X-Auth-Request-Email Authorization
+		}
+
+		impersonate {
+			token_groups off
 		}
 
 		reverse_proxy %s
@@ -185,8 +254,11 @@ var _ = Describe("Impersonate handler functional tests", func() {
 	// standing in for oauth2-proxy, and a header-capture backend standing
 	// in for the Kubernetes API. Requests go through Caddy end-to-end.
 
-	It("sets Impersonate-User and splits groups into individual Impersonate-Group headers", func() {
-		backend, port := setupProxy("alice@example.com", "developers,platform-team", kubeImpersonationCaddyfile)
+	It("sets Impersonate-User and one Impersonate-Group header per token group", func() {
+		backend, port := setupProxy(
+			"alice@example.com",
+			bearerGroups([]string{"developers", "platform-team"}),
+			kubeImpersonationCaddyfile)
 
 		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/api/v1/pods", port))
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
@@ -194,10 +266,26 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(backend.last.Get("Impersonate-User")).To(Equal("alice@example.com"))
 		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
 			[]string{"developers", "platform-team", "system:authenticated"}))
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
+	})
+
+	It("keeps a group whose name contains a comma", func() {
+		backend, port := setupProxy(
+			"alice@example.com",
+			bearerGroups([]string{"platform,team"}),
+			kubeImpersonationCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/api/v1/pods", port))
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"platform,team", "system:authenticated"}))
 	})
 
 	It("writes X-User and X-Group when configured for namespace-lister", func() {
-		backend, port := setupProxy("bob@example.com", "ops,sre", nsListerCaddyfile)
+		backend, port := setupProxy(
+			"bob@example.com",
+			bearerGroups([]string{"ops", "sre"}),
+			nsListerCaddyfile)
 
 		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/api/namespaces", port))
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
@@ -206,10 +294,14 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(backend.last.Values("X-Group")).To(Equal(
 			[]string{"ops", "sre", "system:authenticated"}))
 		Expect(backend.last.Get("Impersonate-User")).To(BeEmpty())
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
 	})
 
-	It("includes system:authenticated even when the auth proxy returns no groups", func() {
-		backend, port := setupProxy("carol@example.com", "", kubeImpersonationCaddyfile)
+	It("includes system:authenticated even when the token has no groups claim", func() {
+		backend, port := setupProxy(
+			"carol@example.com",
+			bearerClaims(map[string]any{}),
+			kubeImpersonationCaddyfile)
 
 		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
 
@@ -219,31 +311,77 @@ var _ = Describe("Impersonate handler functional tests", func() {
 	})
 
 	It("forwards all 15 groups without the 10-group limit of the old regex hack", func() {
-		backend, port := setupProxy(
-			"dave@example.com",
-			"g1,g2,g3,g4,g5,g6,g7,g8,g9,g10,g11,g12,g13,g14,g15",
-			kubeImpersonationCaddyfile)
+		groups := make([]string, 15)
+		for i := range groups {
+			groups[i] = fmt.Sprintf("g%d", i+1)
+		}
+		backend, port := setupProxy("dave@example.com", bearerGroups(groups), kubeImpersonationCaddyfile)
 
 		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
 
-		groups := backend.last.Values("Impersonate-Group")
-		Expect(groups).To(HaveLen(16))
-		Expect(groups[:15]).To(Equal(
-			[]string{"g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8",
-				"g9", "g10", "g11", "g12", "g13", "g14", "g15"}))
-		Expect(groups[15]).To(Equal("system:authenticated"))
+		got := backend.last.Values("Impersonate-Group")
+		Expect(got).To(HaveLen(16))
+		Expect(got[:15]).To(Equal(groups))
+		Expect(got[15]).To(Equal("system:authenticated"))
 	})
 
-	It("strips malicious client-supplied Impersonate-* headers before authentication", func() {
-		backend, port := setupProxy("eve@example.com", "devs", kubeImpersonationCaddyfile)
+	It("strips client-supplied impersonation headers and the ID token", func() {
+		backend, port := setupProxy(
+			"eve@example.com",
+			bearerGroups([]string{"devs"}),
+			kubeImpersonationCaddyfile)
 
 		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
 			"Impersonate-User":  "attacker@evil.com",
 			"Impersonate-Group": "cluster-admin",
+			"Authorization":     "Bearer client-token",
 		})
 
 		Expect(backend.last.Get("Impersonate-User")).To(Equal("eve@example.com"))
 		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
 			[]string{"devs", "system:authenticated"}))
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
+	})
+
+	It("returns 401 when the auth response omits Authorization and the client supplies a JWT", func() {
+		backend, port := setupProxy("carol@example.com", "", kubeImpersonationCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
+			"Authorization": bearerGroups([]string{"forged-group"}),
+		})
+
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(backend.last).To(BeNil())
+	})
+
+	It("uses the client JWT as the group source when copy_headers omits Authorization", func() {
+		backend, port := setupProxy("carol@example.com", "", emailOnlyForwardAuthCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
+			"Authorization": bearerGroups([]string{"client-supplied"}),
+		})
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("carol@example.com"))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"client-supplied", "system:authenticated"}))
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
+	})
+
+	It("strips Authorization and skips token groups when token_groups is off", func() {
+		backend, port := setupProxy(
+			"frank@example.com",
+			bearerGroups([]string{"should-not-appear"}),
+			tokenGroupsOffCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
+			"Authorization": bearerGroups([]string{"client-supplied"}),
+		})
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("frank@example.com"))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"system:authenticated"}))
+		Expect(backend.last.Get("Authorization")).To(BeEmpty())
 	})
 })
