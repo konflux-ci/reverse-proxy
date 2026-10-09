@@ -85,6 +85,7 @@ for Claude Code discovery.
 | Skill | Path | When to use |
 |-------|------|-------------|
 | testing-with-kind | `skills/testing-with-kind/SKILL.md` | Testing local changes in a Kind cluster, iterating on plugin changes end-to-end |
+| retro-filing-policy | `skills/retro-filing-policy/SKILL.md` | Retro output (PR close or `/fs-retro`). Keep `proposals` empty unless the human comment explicitly says to file issues. |
 
 ## Build & Run
 
