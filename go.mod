@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/caddyserver/caddy/v2 v2.11.7
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/onsi/ginkgo/v2 v2.33.0
+	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	go.uber.org/zap v1.28.0
 )
