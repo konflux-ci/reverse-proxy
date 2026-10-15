@@ -1,6 +1,7 @@
 package impersonate
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,7 +14,10 @@ import (
 func provision(t *testing.T, h *Handler) {
 	t.Helper()
 	g := gomega.NewWithT(t)
-	g.Expect(h.Provision(caddy.Context{})).To(gomega.Succeed())
+	server := &caddyhttp.Server{}
+	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, server)}
+	g.Expect(markServerStripped(ctx)).To(gomega.Succeed())
+	g.Expect(h.Provision(ctx)).To(gomega.Succeed())
 }
 
 func newRequest(user, groups string) *http.Request {

@@ -1,10 +1,12 @@
 package impersonate
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/onsi/gomega"
 )
@@ -45,4 +47,17 @@ func TestStripClientHeaders(t *testing.T) {
 		g.Expect(r.Header.Values(name)).To(gomega.BeEmpty())
 	}
 	g.Expect(r.Header.Get("Authorization")).To(gomega.Equal("Bearer client"))
+}
+
+func TestImpersonateRequiresStrip(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	unmarked := &caddyhttp.Server{}
+	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, unmarked)}
+	g.Expect((&Handler{}).Provision(ctx)).NotTo(gomega.Succeed())
+
+	marked := &caddyhttp.Server{}
+	markedCtx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, marked)}
+	g.Expect(markServerStripped(markedCtx)).To(gomega.Succeed())
+	g.Expect((&Handler{}).Provision(markedCtx)).To(gomega.Succeed())
 }

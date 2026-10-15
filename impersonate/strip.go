@@ -92,6 +92,23 @@ func markServerStripped(ctx caddy.Context) error {
 	return nil
 }
 
+// requireServerStripped reports whether strip_request_headers was provisioned
+// on the server in ctx. A missing server or an unmarked server is an error.
+func requireServerStripped(ctx caddy.Context) error {
+	errMissing := errors.New("impersonate requires strip_request_headers on this server")
+	if ctx.Context == nil {
+		return errMissing
+	}
+	server, ok := ctx.Value(caddyhttp.ServerCtxKey).(*caddyhttp.Server)
+	if !ok || server == nil {
+		return errMissing
+	}
+	if _, marked := strippedServers.Load(server); !marked {
+		return errMissing
+	}
+	return nil
+}
+
 // parseStripCaddyfile registers strip_request_headers as a Caddyfile
 // handler directive via httpcaddyfile.RegisterHandlerDirective.
 func parseStripCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
