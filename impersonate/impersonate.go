@@ -113,6 +113,10 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the handler by applying default values for any
 // fields not explicitly configured and initializing the logger.
 func (h *Handler) Provision(ctx caddy.Context) error {
+	if err := requireServerStripped(ctx); err != nil {
+		return err
+	}
+
 	h.logger = ctx.Logger()
 
 	if h.SourceUser == "" {

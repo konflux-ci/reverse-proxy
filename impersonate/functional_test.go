@@ -22,16 +22,16 @@ import (
 // running Caddy server, wired with forward_auth and reverse_proxy — mirroring
 // the Konflux production proxy configuration.
 //
-// Each test starts three components:
+// Request specs start three components:
 //   - authMock:       a dummy oauth2-proxy that returns auth response headers
 //   - headerCapture:  a dummy upstream backend that records incoming headers
-//   - Caddy:          loaded from a Caddyfile via the adapter with the full
-//                     forward_auth → impersonate → reverse_proxy handler chain
+//   - Caddy:          loaded from a Caddyfile with strip_request_headers on
+//                     the site, then forward_auth, impersonate, and reverse_proxy
 //
 // The tests send HTTP requests through Caddy and assert that the backend
 // receives the correct impersonation headers. This validates that the plugin
-// integrates correctly with Caddy's forward_auth header copying and
-// request_header stripping.
+// integrates correctly with Caddy's forward_auth header copying and the
+// site-level strip_request_headers handler.
 
 // headerCapture records all request headers and returns them as JSON.
 // It acts as a stand-in for an upstream backend (e.g. Kubernetes API).
@@ -137,10 +137,8 @@ func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr
 }
 
 :%d {
+	strip_request_headers
 	route {
-		request_header -Impersonate-User
-		request_header -Impersonate-Group
-
 		forward_auth %s {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-Email X-Auth-Request-Groups
@@ -162,6 +160,7 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 }
 
 :%d {
+	strip_request_headers
 	route {
 		forward_auth %s {
 			uri /oauth2/auth
@@ -180,10 +179,10 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 }
 
 var _ = Describe("Impersonate handler functional tests", func() {
-	// Each test spins up a real Caddy instance configured with the full
-	// forward_auth → impersonate → reverse_proxy chain, an auth mock
-	// standing in for oauth2-proxy, and a header-capture backend standing
-	// in for the Kubernetes API. Requests go through Caddy end-to-end.
+	// Request specs spin up a real Caddy instance with strip_request_headers
+	// outside the route, then forward_auth, impersonate, and reverse_proxy.
+	// An auth mock stands in for oauth2-proxy, and a header-capture backend
+	// stands in for the Kubernetes API. Requests go through Caddy end-to-end.
 
 	It("sets Impersonate-User and splits groups into individual Impersonate-Group headers", func() {
 		backend, port := setupProxy("alice@example.com", "developers,platform-team", kubeImpersonationCaddyfile)
@@ -245,5 +244,58 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(backend.last.Get("Impersonate-User")).To(Equal("eve@example.com"))
 		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
 			[]string{"devs", "system:authenticated"}))
+	})
+
+	It("fails to load when impersonate is used without strip_request_headers", func() {
+		listenPort := freePort()
+		// admin off: Caddy binds the admin listener before handler provisioning.
+		// A failed Load never becomes the current config, so caddy.Stop cannot
+		// release that listener.
+		caddyfile := fmt.Sprintf(`{
+	admin off
+}
+
+:%d {
+	route {
+		impersonate
+		respond "ok"
+	}
+}
+`, listenPort)
+
+		adapter := caddyconfig.GetAdapter("caddyfile")
+		Expect(adapter).NotTo(BeNil(), "caddyfile adapter not registered")
+
+		jsonCfg, _, err := adapter.Adapt([]byte(caddyfile), nil)
+		Expect(err).NotTo(HaveOccurred(), "failed to adapt caddyfile")
+
+		DeferCleanup(func() { _ = caddy.Stop() })
+		Expect(caddy.Load(jsonCfg, true)).NotTo(Succeed())
+	})
+
+	It("drops client-spoofed headers and keeps the auth proxy identity", func() {
+		backend, port := setupProxy("alice@example.com", "developers", kubeImpersonationCaddyfile)
+
+		spoofed := map[string]string{ //nolint:gosec // G101: Id-Token fixture from the spec, not a real token
+			"Impersonate-User":         "attacker",
+			"Impersonate-Group":        "system:masters",
+			"Impersonate-Extra-scopes": "admin",
+			"X-User":                   "attacker",
+			"X-Group":                  "attacker",
+			"X-Auth-Request-Id-Token":  "eyJ.eyJ.sig",
+			"X-Auth-Request-Email":     "attacker@example.com",
+			"X-Auth-Request-Groups":    "system:masters",
+		}
+		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), spoofed)
+
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("alice@example.com"))
+		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
+			[]string{"developers", "system:authenticated"}))
+		Expect(backend.last.Values("Impersonate-Extra-Scopes")).To(BeEmpty())
+		Expect(backend.last.Values("X-User")).To(BeEmpty())
+		Expect(backend.last.Values("X-Group")).To(BeEmpty())
+		Expect(backend.last.Values("X-Auth-Request-Id-Token")).To(BeEmpty())
+		Expect(backend.last.Values("X-Auth-Request-Email")).To(Equal([]string{"alice@example.com"}))
+		Expect(backend.last.Values("X-Auth-Request-Groups")).To(Equal([]string{"developers"}))
 	})
 })
