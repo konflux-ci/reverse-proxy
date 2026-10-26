@@ -16,7 +16,7 @@ func provision(t *testing.T, h *Handler) {
 	g := gomega.NewWithT(t)
 	server := &caddyhttp.Server{}
 	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, server)}
-	g.Expect(markServerStripped(ctx)).To(gomega.Succeed())
+	g.Expect(markIdentityGuard(ctx)).To(gomega.Succeed())
 	g.Expect(h.Provision(ctx)).To(gomega.Succeed())
 }
 

@@ -25,13 +25,13 @@ import (
 // Request specs start three components:
 //   - authMock:       a dummy oauth2-proxy that returns auth response headers
 //   - headerCapture:  a dummy upstream backend that records incoming headers
-//   - Caddy:          loaded from a Caddyfile with strip_request_headers on
+//   - Caddy:          loaded from a Caddyfile with reject_identity_headers on
 //                     the site, then forward_auth, impersonate, and reverse_proxy
 //
 // The tests send HTTP requests through Caddy and assert that the backend
 // receives the correct impersonation headers. This validates that the plugin
 // integrates correctly with Caddy's forward_auth header copying and the
-// site-level strip_request_headers handler.
+// site-level reject_identity_headers handler.
 
 // headerCapture records all request headers and returns them as JSON.
 // It acts as a stand-in for an upstream backend (e.g. Kubernetes API).
@@ -110,14 +110,9 @@ func hostPort(srv *httptest.Server) string {
 	return srv.Listener.Addr().String()
 }
 
-func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
+func httpGet(url string) *http.Response {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	for _, h := range extraHeaders {
-		for k, v := range h {
-			req.Header.Set(k, v)
-		}
-	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -128,8 +123,8 @@ func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
 	return resp
 }
 
-// kubeImpersonationCaddyfile mirrors the Konflux production config: strip
-// client-supplied impersonation headers, authenticate via forward_auth,
+// kubeImpersonationCaddyfile mirrors the Konflux production config: reject
+// client-supplied identity headers, authenticate via forward_auth,
 // translate groups with the impersonate handler, then proxy to the backend.
 func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
 	return fmt.Sprintf(`{
@@ -137,7 +132,7 @@ func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr
 }
 
 :%d {
-	strip_request_headers
+	reject_identity_headers
 	route {
 		forward_auth %s {
 			uri /oauth2/auth
@@ -160,7 +155,7 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 }
 
 :%d {
-	strip_request_headers
+	reject_identity_headers
 	route {
 		forward_auth %s {
 			uri /oauth2/auth
@@ -179,7 +174,7 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 }
 
 var _ = Describe("Impersonate handler functional tests", func() {
-	// Request specs spin up a real Caddy instance with strip_request_headers
+	// Request specs spin up a real Caddy instance with reject_identity_headers
 	// outside the route, then forward_auth, impersonate, and reverse_proxy.
 	// An auth mock stands in for oauth2-proxy, and a header-capture backend
 	// stands in for the Kubernetes API. Requests go through Caddy end-to-end.
@@ -233,20 +228,7 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(groups[15]).To(Equal("system:authenticated"))
 	})
 
-	It("strips malicious client-supplied Impersonate-* headers before authentication", func() {
-		backend, port := setupProxy("eve@example.com", "devs", kubeImpersonationCaddyfile)
-
-		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
-			"Impersonate-User":  "attacker@evil.com",
-			"Impersonate-Group": "cluster-admin",
-		})
-
-		Expect(backend.last.Get("Impersonate-User")).To(Equal("eve@example.com"))
-		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
-			[]string{"devs", "system:authenticated"}))
-	})
-
-	It("fails to load when impersonate is used without strip_request_headers", func() {
+	It("fails to load when impersonate is used without reject_identity_headers", func() {
 		listenPort := freePort()
 		// admin off: Caddy binds the admin listener before handler provisioning.
 		// A failed Load never becomes the current config, so caddy.Stop cannot
@@ -273,29 +255,22 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(caddy.Load(jsonCfg, true)).NotTo(Succeed())
 	})
 
-	It("drops client-spoofed headers and keeps the auth proxy identity", func() {
+	It("rejects a client identity header with 400 and does not proxy", func() {
 		backend, port := setupProxy("alice@example.com", "developers", kubeImpersonationCaddyfile)
 
-		spoofed := map[string]string{ //nolint:gosec // G101: Id-Token fixture from the spec, not a real token
-			"Impersonate-User":         "attacker",
-			"Impersonate-Group":        "system:masters",
-			"Impersonate-Extra-scopes": "admin",
-			"X-User":                   "attacker",
-			"X-Group":                  "attacker",
-			"X-Auth-Request-Id-Token":  "eyJ.eyJ.sig",
-			"X-Auth-Request-Email":     "attacker@example.com",
-			"X-Auth-Request-Groups":    "system:masters",
-		}
-		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), spoofed)
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/test", port), nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Impersonate-User", "attacker")
 
-		Expect(backend.last.Get("Impersonate-User")).To(Equal("alice@example.com"))
-		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
-			[]string{"developers", "system:authenticated"}))
-		Expect(backend.last.Values("Impersonate-Extra-Scopes")).To(BeEmpty())
-		Expect(backend.last.Values("X-User")).To(BeEmpty())
-		Expect(backend.last.Values("X-Group")).To(BeEmpty())
-		Expect(backend.last.Values("X-Auth-Request-Id-Token")).To(BeEmpty())
-		Expect(backend.last.Values("X-Auth-Request-Email")).To(Equal([]string{"alice@example.com"}))
-		Expect(backend.last.Values("X-Auth-Request-Groups")).To(Equal([]string{"developers"}))
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(string(body)).To(ContainSubstring("Impersonate-User"))
+		Expect(string(body)).NotTo(ContainSubstring("attacker"))
+		Expect(backend.last).To(BeNil())
 	})
 })
