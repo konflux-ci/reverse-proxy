@@ -1,11 +1,10 @@
 package impersonate
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -35,9 +34,20 @@ var rejectedHeaders = []string{
 
 const impersonateExtraPrefix = "Impersonate-Extra-"
 
-// guardedServers records each server whose reject_identity_headers handler
-// was provisioned. The key is the *caddyhttp.Server from the provision context.
-var guardedServers sync.Map
+// requestIdentityCheckedKey is set only after reject_identity_headers has
+// accepted this request. Load rejects a route that can reach impersonate
+// without that handler; this mark is the per-request backstop.
+type requestIdentityCheckedKey struct{}
+
+func markRequestIdentityChecked(r *http.Request) *http.Request {
+	ctx := context.WithValue(r.Context(), requestIdentityCheckedKey{}, struct{}{})
+	return r.WithContext(ctx)
+}
+
+func requestIdentityChecked(r *http.Request) bool {
+	_, ok := r.Context().Value(requestIdentityCheckedKey{}).(struct{})
+	return ok
+}
 
 // RejectIdentityHeaders refuses a request that carries a client-supplied
 // identity header. The directive takes no arguments. Authorization is allowed.
@@ -54,10 +64,10 @@ func (RejectIdentityHeaders) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// Provision records that this server rejects client-supplied identity headers.
+// Provision stores the logger used when a request is rejected.
 func (h *RejectIdentityHeaders) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger()
-	return markIdentityGuard(ctx)
+	return nil
 }
 
 // ServeHTTP returns 400 when the request contains a disallowed identity
@@ -67,7 +77,7 @@ func (h *RejectIdentityHeaders) Provision(ctx caddy.Context) error {
 func (h RejectIdentityHeaders) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	name, reject := rejectedIdentityHeader(r.Header)
 	if !reject {
-		return next.ServeHTTP(w, r)
+		return next.ServeHTTP(w, markRequestIdentityChecked(r))
 	}
 	if h.logger != nil {
 		h.logger.Warn("rejected request with a disallowed identity header",
@@ -102,38 +112,6 @@ func rejectedIdentityHeader(h http.Header) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// markIdentityGuard stores the server from ctx so later checks can tell
-// that reject_identity_headers was provisioned on it. A missing context, a
-// missing server, or a value of the wrong type returns an error.
-func markIdentityGuard(ctx caddy.Context) error {
-	if ctx.Context == nil {
-		return errors.New("reject_identity_headers: server context is missing or has the wrong type")
-	}
-	server, ok := ctx.Value(caddyhttp.ServerCtxKey).(*caddyhttp.Server)
-	if !ok || server == nil {
-		return errors.New("reject_identity_headers: server context is missing or has the wrong type")
-	}
-	guardedServers.Store(server, struct{}{})
-	return nil
-}
-
-// requireIdentityGuard reports whether reject_identity_headers was provisioned
-// on the server in ctx. A missing server or an unmarked server is an error.
-func requireIdentityGuard(ctx caddy.Context) error {
-	errMissing := errors.New("impersonate requires reject_identity_headers on this server")
-	if ctx.Context == nil {
-		return errMissing
-	}
-	server, ok := ctx.Value(caddyhttp.ServerCtxKey).(*caddyhttp.Server)
-	if !ok || server == nil {
-		return errMissing
-	}
-	if _, marked := guardedServers.Load(server); !marked {
-		return errMissing
-	}
-	return nil
 }
 
 // parseRejectCaddyfile registers reject_identity_headers as a Caddyfile

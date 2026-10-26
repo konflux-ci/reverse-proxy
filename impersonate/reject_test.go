@@ -93,12 +93,9 @@ func TestRejectIdentityHeadersAllowsOtherHeaders(t *testing.T) {
 func TestImpersonateRequiresRejectIdentityHeaders(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	unmarked := &caddyhttp.Server{}
-	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, unmarked)}
-	g.Expect((&Handler{}).Provision(ctx)).NotTo(gomega.Succeed())
+	g.Expect((&Handler{}).Provision(caddy.Context{})).NotTo(gomega.Succeed())
 
-	marked := &caddyhttp.Server{}
-	markedCtx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, marked)}
-	g.Expect(markIdentityGuard(markedCtx)).To(gomega.Succeed())
-	g.Expect((&Handler{}).Provision(markedCtx)).To(gomega.Succeed())
+	empty := &caddyhttp.Server{}
+	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, empty)}
+	g.Expect((&Handler{}).Provision(ctx)).NotTo(gomega.Succeed())
 }

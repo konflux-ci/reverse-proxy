@@ -2,6 +2,7 @@ package impersonate
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,9 +15,15 @@ import (
 func provision(t *testing.T, h *Handler) {
 	t.Helper()
 	g := gomega.NewWithT(t)
-	server := &caddyhttp.Server{}
+	server := &caddyhttp.Server{
+		Routes: caddyhttp.RouteList{{
+			HandlersRaw: []json.RawMessage{
+				json.RawMessage(`{"handler":"reject_identity_headers"}`),
+				json.RawMessage(`{"handler":"impersonate"}`),
+			},
+		}},
+	}
 	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, server)}
-	g.Expect(markIdentityGuard(ctx)).To(gomega.Succeed())
 	g.Expect(h.Provision(ctx)).To(gomega.Succeed())
 }
 
@@ -47,6 +54,7 @@ func serve(t *testing.T, h *Handler, r *http.Request) http.Header {
 	g := gomega.NewWithT(t)
 	w := httptest.NewRecorder()
 	next := &captureNext{}
+	r = markRequestIdentityChecked(r)
 	g.Expect(h.ServeHTTP(w, r, next)).To(gomega.Succeed())
 	return next.header
 }
@@ -203,6 +211,24 @@ func TestEmptyGroupValuesSkipped(t *testing.T) {
 	got := serve(t, h, newRequest("alice@example.com", "devs,,ops,"))
 	g.Expect(got.Values("Impersonate-Group")).To(gomega.Equal(
 		[]string{"devs", "ops", "system:authenticated"}))
+}
+
+func TestImpersonateRefusesUnmarkedRequest(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	h := &Handler{}
+	provision(t, h)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Impersonate-User", "attacker")
+	w := httptest.NewRecorder()
+	next := &captureNext{}
+
+	g.Expect(h.ServeHTTP(w, r, next)).To(gomega.Succeed())
+	g.Expect(w.Code).To(gomega.Equal(http.StatusInternalServerError))
+	g.Expect(w.Body.String()).To(gomega.ContainSubstring("reject_identity_headers"))
+	g.Expect(w.Body.String()).NotTo(gomega.ContainSubstring("attacker"))
+	g.Expect(next.header).To(gomega.BeNil())
 }
 
 var _ caddyhttp.Handler = (*captureNext)(nil)

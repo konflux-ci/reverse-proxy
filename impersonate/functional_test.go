@@ -255,6 +255,44 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(caddy.Load(jsonCfg, true)).NotTo(Succeed())
 	})
 
+	It("fails to load when reject_identity_headers is only on another route", func() {
+		listenPort := freePort()
+		// admin off: Caddy binds the admin listener before handler provisioning.
+		// A failed Load never becomes the current config, so caddy.Stop cannot
+		// release that listener.
+		// reject_identity_headers is on this server, but only the /other* handle
+		// runs it. The catch-all handle reaches impersonate without that handler.
+		// That must fail at load time. Starting anyway would 500 every request.
+		caddyfile := fmt.Sprintf(`{
+	admin off
+}
+
+:%d {
+	handle /other* {
+		reject_identity_headers
+		respond "other"
+	}
+	handle {
+		route {
+			impersonate
+			respond "ok"
+		}
+	}
+}
+`, listenPort)
+
+		adapter := caddyconfig.GetAdapter("caddyfile")
+		Expect(adapter).NotTo(BeNil(), "caddyfile adapter not registered")
+
+		jsonCfg, _, err := adapter.Adapt([]byte(caddyfile), nil)
+		Expect(err).NotTo(HaveOccurred(), "failed to adapt caddyfile")
+
+		DeferCleanup(func() { _ = caddy.Stop() })
+		err = caddy.Load(jsonCfg, true)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same request path"))
+	})
+
 	It("rejects a client identity header with 400 and does not proxy", func() {
 		backend, port := setupProxy("alice@example.com", "developers", kubeImpersonationCaddyfile)
 
