@@ -96,18 +96,39 @@ func freePort() int {
 }
 
 func startCaddyFromCaddyfile(caddyfileContent string) {
+	Expect(loadCaddyfile(caddyfileContent)).To(Succeed(), "failed to load caddy config")
+}
+
+// loadCaddyfile adapts a Caddyfile and loads it. Callers that expect failure
+// put "admin off" in the file: Caddy binds the admin listener before handler
+// provisioning, and a failed load never becomes the current config, so
+// caddy.Stop cannot release that listener.
+func loadCaddyfile(caddyfileContent string) error {
 	adapter := caddyconfig.GetAdapter("caddyfile")
 	Expect(adapter).NotTo(BeNil(), "caddyfile adapter not registered")
 
 	jsonCfg, _, err := adapter.Adapt([]byte(caddyfileContent), nil)
 	Expect(err).NotTo(HaveOccurred(), "failed to adapt caddyfile")
 
-	Expect(caddy.Load(jsonCfg, true)).To(Succeed(), "failed to load caddy config")
 	DeferCleanup(func() { _ = caddy.Stop() })
+	return caddy.Load(jsonCfg, true)
 }
 
 func hostPort(srv *httptest.Server) string {
 	return srv.Listener.Addr().String()
+}
+
+func requestIdentityHeader(url string) (int, string) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	req.Header.Set("Impersonate-User", "attacker")
+
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return resp.StatusCode, string(body)
 }
 
 func httpGet(url string) *http.Response {
@@ -230,10 +251,7 @@ var _ = Describe("Impersonate handler functional tests", func() {
 
 	It("fails to load when impersonate is used without reject_identity_headers", func() {
 		listenPort := freePort()
-		// admin off: Caddy binds the admin listener before handler provisioning.
-		// A failed Load never becomes the current config, so caddy.Stop cannot
-		// release that listener.
-		caddyfile := fmt.Sprintf(`{
+		err := loadCaddyfile(fmt.Sprintf(`{
 	admin off
 }
 
@@ -243,27 +261,15 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		respond "ok"
 	}
 }
-`, listenPort)
-
-		adapter := caddyconfig.GetAdapter("caddyfile")
-		Expect(adapter).NotTo(BeNil(), "caddyfile adapter not registered")
-
-		jsonCfg, _, err := adapter.Adapt([]byte(caddyfile), nil)
-		Expect(err).NotTo(HaveOccurred(), "failed to adapt caddyfile")
-
-		DeferCleanup(func() { _ = caddy.Stop() })
-		Expect(caddy.Load(jsonCfg, true)).NotTo(Succeed())
+`, listenPort))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same request path"))
 	})
 
 	It("fails to load when reject_identity_headers is only on another route", func() {
 		listenPort := freePort()
-		// admin off: Caddy binds the admin listener before handler provisioning.
-		// A failed Load never becomes the current config, so caddy.Stop cannot
-		// release that listener.
-		// reject_identity_headers is on this server, but only the /other* handle
-		// runs it. The catch-all handle reaches impersonate without that handler.
-		// That must fail at load time. Starting anyway would 500 every request.
-		caddyfile := fmt.Sprintf(`{
+		// The directive is on this server, but only the /other* handle runs it.
+		err := loadCaddyfile(fmt.Sprintf(`{
 	admin off
 }
 
@@ -279,18 +285,80 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		}
 	}
 }
-`, listenPort)
-
-		adapter := caddyconfig.GetAdapter("caddyfile")
-		Expect(adapter).NotTo(BeNil(), "caddyfile adapter not registered")
-
-		jsonCfg, _, err := adapter.Adapt([]byte(caddyfile), nil)
-		Expect(err).NotTo(HaveOccurred(), "failed to adapt caddyfile")
-
-		DeferCleanup(func() { _ = caddy.Stop() })
-		err = caddy.Load(jsonCfg, true)
+`, listenPort))
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("same request path"))
+	})
+
+	It("fails to load when impersonate precedes reject_identity_headers in a route", func() {
+		listenPort := freePort()
+		// route keeps source order, so the reject handler runs too late.
+		err := loadCaddyfile(fmt.Sprintf(`{
+	admin off
+}
+
+:%d {
+	route {
+		impersonate
+		reject_identity_headers
+		respond "ok"
+	}
+}
+`, listenPort))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same request path"))
+	})
+
+	It("rejects a client identity header when each handle has its own reject_identity_headers", func() {
+		backend := &headerCapture{}
+		backendSrv := httptest.NewServer(backend)
+		DeferCleanup(backendSrv.Close)
+
+		listenPort := freePort()
+		adminPort := freePort()
+		backendAddr := hostPort(backendSrv)
+		startCaddyFromCaddyfile(fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+}
+
+:%d {
+	handle /a* {
+		reject_identity_headers
+		route {
+			impersonate
+			reverse_proxy %s
+		}
+	}
+	handle /b* {
+		reject_identity_headers
+		route {
+			impersonate
+			reverse_proxy %s
+		}
+	}
+}
+`, adminPort, listenPort, backendAddr, backendAddr))
+
+		for _, path := range []string{"/a", "/b"} {
+			status, body := requestIdentityHeader(fmt.Sprintf("http://127.0.0.1:%d%s", listenPort, path))
+			Expect(status).To(Equal(http.StatusBadRequest))
+			Expect(body).To(ContainSubstring("Impersonate-User"))
+			Expect(body).NotTo(ContainSubstring("attacker"))
+			Expect(backend.last).To(BeNil())
+		}
+	})
+
+	It("does not return 500 when a loaded config reaches impersonate", func() {
+		// The safety net returns 500 only when reject_identity_headers did
+		// not run on this request. A config that loaded has already placed
+		// that handler upstream, so the request is proxied.
+		backend, port := setupProxy("alice@example.com", "developers", kubeImpersonationCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last).NotTo(BeNil())
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("alice@example.com"))
 	})
 
 	It("rejects a client identity header with 400 and does not proxy", func() {

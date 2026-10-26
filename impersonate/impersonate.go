@@ -146,8 +146,8 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // ServeHTTP reads the source user/groups headers, translates them into
 // target headers, and passes the request to the next handler.
 // It returns 500 when this request did not already pass through
-// reject_identity_headers. Provision rejects that placement at load
-// time; this is the backstop for a path the route walk cannot see.
+// reject_identity_headers. That check is a secondary safety net
+// against bugs in placement.go.
 //
 // Processing order:
 //  1. Refuse the request when reject_identity_headers did not already accept it.
@@ -157,6 +157,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 //     and add each as an individual TargetGroup header.
 //  5. Append all AlwaysInclude groups as additional TargetGroup headers.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Secondary safety net against bugs in placement.go. Provision already
+	// refuses to load unless reject_identity_headers is earlier on this
+	// path. This runs only when that route walk was wrong.
 	if !requestIdentityChecked(r) {
 		if h.logger != nil {
 			h.logger.Error("impersonate ran without reject_identity_headers on this request path")
