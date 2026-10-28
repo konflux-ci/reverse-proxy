@@ -26,6 +26,7 @@
 //
 // Kubernetes API impersonation with defaults (zero config):
 //
+//	reject_identity_headers
 //	route {
 //	    forward_auth 127.0.0.1:6000 {
 //	        uri /oauth2/auth
@@ -34,6 +35,11 @@
 //	    impersonate
 //	    reverse_proxy https://kubernetes.default.svc { ... }
 //	}
+//
+// The reject_identity_headers directive is required before authentication on
+// every impersonation path. Place it at site level as above. Inside a route,
+// source order is preserved, so rejection must precede forward_auth and any
+// request_header changes.
 //
 // All options with their defaults shown:
 //
@@ -112,7 +118,13 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 
 // Provision sets up the handler by applying default values for any
 // fields not explicitly configured and initializing the logger.
+// It refuses to load when reject_identity_headers is not upstream of
+// every impersonate handler on this server.
 func (h *Handler) Provision(ctx caddy.Context) error {
+	if err := requireRejectBeforeImpersonate(ctx); err != nil {
+		return err
+	}
+
 	h.logger = ctx.Logger()
 
 	if h.SourceUser == "" {
@@ -139,14 +151,30 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 // ServeHTTP reads the source user/groups headers, translates them into
 // target headers, and passes the request to the next handler.
+// It returns 500 when this request did not already pass through
+// reject_identity_headers. That check is a secondary safety net
+// against bugs in placement.go.
 //
 // Processing order:
-//  1. Copy SourceUser → TargetUser (skip if source is empty).
-//  2. Delete any pre-existing TargetGroup headers.
-//  3. Split SourceGroups by Separator, trim whitespace, skip empty values,
+//  1. Refuse the request when reject_identity_headers did not already accept it.
+//  2. Copy SourceUser → TargetUser (skip if source is empty).
+//  3. Delete any pre-existing TargetGroup headers.
+//  4. Split SourceGroups by Separator, trim whitespace, skip empty values,
 //     and add each as an individual TargetGroup header.
-//  4. Append all AlwaysInclude groups as additional TargetGroup headers.
+//  5. Append all AlwaysInclude groups as additional TargetGroup headers.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Secondary safety net against bugs in placement.go. Provision already
+	// refuses to load unless reject_identity_headers is earlier on this
+	// path. This runs only when that route walk was wrong.
+	if !requestIdentityChecked(r) {
+		if h.logger != nil {
+			h.logger.Error("impersonate ran without reject_identity_headers on this request path")
+		}
+		const msg = "impersonate requires reject_identity_headers earlier on this request path"
+		http.Error(w, msg, http.StatusInternalServerError)
+		return nil
+	}
+
 	user := r.Header.Get(h.SourceUser)
 	if user != "" {
 		r.Header.Set(h.TargetUser, user)
