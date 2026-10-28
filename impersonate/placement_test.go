@@ -93,6 +93,27 @@ func TestIdentityGuardPlacement(t *testing.T) {
 			routes:  `[{"handle":[{"handler":"impersonate"}]}]`,
 			wantErr: errIdentityGuardPath,
 		},
+		{
+			name: "nested error route has its own reject",
+			routes: `[{"handle":[{"handler":"subroute","errors":{"routes":[
+				{"handle":[{"handler":"reject_identity_headers"},{"handler":"impersonate"}]}
+			]}}]}]`,
+		},
+		{
+			name: "nested error route cannot inherit a guard from the primary subroutes",
+			routes: `[{"handle":[{"handler":"subroute",
+				"routes":[{"handle":[{"handler":"reject_identity_headers"}]}],
+				"errors":{"routes":[{"handle":[{"handler":"impersonate"}]}]}
+			}]}]`,
+			wantErr: errIdentityGuardPath,
+		},
+		{
+			name: "unconditional terminal route makes later handlers unreachable",
+			routes: `[
+				{"terminal":true,"handle":[{"handler":"reject_identity_headers"},{"handler":"impersonate"}]},
+				{"handle":[{"handler":"impersonate"}]}
+			]`,
+		},
 	}
 
 	for _, tc := range cases {

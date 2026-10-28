@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/onsi/gomega"
 )
@@ -98,4 +99,11 @@ func TestImpersonateRequiresRejectIdentityHeaders(t *testing.T) {
 	empty := &caddyhttp.Server{}
 	ctx := caddy.Context{Context: context.WithValue(context.Background(), caddyhttp.ServerCtxKey, empty)}
 	g.Expect((&Handler{}).Provision(ctx)).NotTo(gomega.Succeed())
+}
+
+func TestRejectIdentityHeadersRejectsArguments(t *testing.T) {
+	g := gomega.NewWithT(t)
+	h := &RejectIdentityHeaders{}
+	g.Expect(h.UnmarshalCaddyfile(caddyfile.NewTestDispenser("reject_identity_headers extra"))).
+		To(gomega.HaveOccurred())
 }

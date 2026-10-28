@@ -26,6 +26,7 @@
 //
 // Kubernetes API impersonation with defaults (zero config):
 //
+//	reject_identity_headers
 //	route {
 //	    forward_auth 127.0.0.1:6000 {
 //	        uri /oauth2/auth
@@ -34,6 +35,11 @@
 //	    impersonate
 //	    reverse_proxy https://kubernetes.default.svc { ... }
 //	}
+//
+// The reject_identity_headers directive is required before authentication on
+// every impersonation path. Place it at site level as above. Inside a route,
+// source order is preserved, so rejection must precede forward_auth and any
+// request_header changes.
 //
 // All options with their defaults shown:
 //

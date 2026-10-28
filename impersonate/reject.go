@@ -16,9 +16,9 @@ import (
 func init() {
 	caddy.RegisterModule(RejectIdentityHeaders{})
 	httpcaddyfile.RegisterHandlerDirective("reject_identity_headers", parseRejectCaddyfile)
-	// Before handle: a site-level directive runs for every request, ahead of
-	// route and handle blocks. forward_auth writes the same header names later.
-	httpcaddyfile.RegisterDirectiveOrder("reject_identity_headers", httpcaddyfile.Before, "handle")
+	// Reject client headers before forward_auth writes trusted identity headers
+	// or request_header removes them, including at site level and inside handle.
+	httpcaddyfile.RegisterDirectiveOrder("reject_identity_headers", httpcaddyfile.Before, "forward_auth")
 }
 
 var rejectedHeaders = []string{
