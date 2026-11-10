@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/hi/go@sha256:4f64134d9fabdf432297a05dd845d0f5df4184dc600937568ffcf9c0056d12a8 AS builder
+FROM registry.access.redhat.com/hi/go@sha256:fe899d22e22f546e7553700cf263e2f7a6382f4e20d2fb856fc0557719b188d6 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # Minimal runtime for statically compiled binaries (Go/Rust/C/C++).
 # Includes only CA certs, timezone data, and a non-root user.
 # No shell, package manager, or C library is included.
-FROM registry.access.redhat.com/hi/static@sha256:c51e17de4a96e3bd68361830ec54f3c43ffcf398b82765a1ce250bd4a0d99d1f
+FROM registry.access.redhat.com/hi/static@sha256:cac22d5a26d90c14801f8e48cc99dcb8a08f270cdc9ebaa205ac5b29f8a3d2fa
 WORKDIR /
 COPY --from=builder /opt/app-root/caddy /usr/bin/caddy
 COPY LICENSE /licenses/
