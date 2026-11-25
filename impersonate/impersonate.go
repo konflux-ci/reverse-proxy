@@ -27,6 +27,13 @@
 // Kubernetes API impersonation with defaults (zero config):
 //
 //	route {
+//	    # Defense-in-depth: strip source headers before forward_auth.
+//	    # On Caddy v2.11.4+ copy_headers deletes the client value before
+//	    # re-setting from the auth response, but these directives protect
+//	    # older versions and non-forward_auth deployments.
+//	    request_header -X-Auth-Request-Email
+//	    request_header -X-Auth-Request-Groups
+//
 //	    forward_auth 127.0.0.1:6000 {
 //	        uri /oauth2/auth
 //	        copy_headers X-Auth-Request-Email X-Auth-Request-Groups
@@ -55,6 +62,7 @@
 package impersonate
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -134,6 +142,51 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		h.AlwaysInclude = []string{"system:authenticated"}
 	}
 
+	if err := h.validateHeaders(); err != nil {
+		return err
+	}
+
+	for _, g := range h.AlwaysInclude {
+		if strings.TrimSpace(g) == "" {
+			return fmt.Errorf("always_include contains an empty or whitespace-only group")
+		}
+	}
+
+	return nil
+}
+
+// validateHeaders rejects configurations where any of the four configured
+// header names collide with each other or with the reserved Kubernetes
+// impersonation header family (Impersonate-*).
+func (h *Handler) validateHeaders() error {
+	type namedHeader struct {
+		directive string
+		value     string
+	}
+
+	headers := []namedHeader{
+		{"source_user", h.SourceUser},
+		{"source_groups", h.SourceGroups},
+		{"target_user", h.TargetUser},
+		{"target_group", h.TargetGroup},
+	}
+
+	for i, a := range headers {
+		for j, b := range headers {
+			if i != j && http.CanonicalHeaderKey(a.value) == http.CanonicalHeaderKey(b.value) {
+				return fmt.Errorf("%s and %s must not be the same header (%s)", a.directive, b.directive, a.value)
+			}
+		}
+	}
+
+	sources := headers[:2]
+	for _, s := range sources {
+		canonical := http.CanonicalHeaderKey(s.value)
+		if strings.HasPrefix(canonical, "Impersonate-") {
+			return fmt.Errorf("%s must not use a reserved Impersonate-* header (%s)", s.directive, s.value)
+		}
+	}
+
 	return nil
 }
 
@@ -141,20 +194,36 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // target headers, and passes the request to the next handler.
 //
 // Processing order:
-//  1. Copy SourceUser → TargetUser (skip if source is empty).
-//  2. Delete any pre-existing TargetGroup headers.
-//  3. Split SourceGroups by Separator, trim whitespace, skip empty values,
+//  1. Read source headers before any deletions.
+//  2. Strip source headers, all Impersonate-* headers, and the configured
+//     TargetUser/TargetGroup (if outside the Impersonate-* family).
+//  3. If SourceUser is empty or whitespace-only, reject with 401.
+//  4. Set TargetUser from SourceUser.
+//  5. Split SourceGroups by Separator, trim whitespace, skip empty values,
 //     and add each as an individual TargetGroup header.
-//  4. Append all AlwaysInclude groups as additional TargetGroup headers.
+//  6. Append all AlwaysInclude groups as additional TargetGroup headers.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	user := r.Header.Get(h.SourceUser)
-	if user != "" {
-		r.Header.Set(h.TargetUser, user)
-	}
+	user := strings.TrimSpace(r.Header.Get(h.SourceUser))
+	groupsRaw := r.Header.Get(h.SourceGroups)
 
+	r.Header.Del(h.SourceUser)
+	r.Header.Del(h.SourceGroups)
+	for name := range r.Header {
+		if strings.HasPrefix(name, "Impersonate-") {
+			delete(r.Header, name)
+		}
+	}
+	r.Header.Del(h.TargetUser)
 	r.Header.Del(h.TargetGroup)
 
-	groupsRaw := r.Header.Get(h.SourceGroups)
+	if user == "" {
+		h.logger.Warn("source user header is empty, rejecting request",
+			zap.String("source_header", h.SourceUser))
+		return caddyhttp.Error(http.StatusUnauthorized,
+			fmt.Errorf("source user header %s is empty", h.SourceUser))
+	}
+	r.Header.Set(h.TargetUser, user)
+
 	if groupsRaw != "" {
 		for g := range strings.SplitSeq(groupsRaw, h.Separator) {
 			g = strings.TrimSpace(g)
