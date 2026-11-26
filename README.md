@@ -96,6 +96,26 @@ sets them as individual impersonation headers on the request.
    value as a separate `Impersonate-Group` header
 3. Always appends `system:authenticated` (configurable)
 
+Every request path using `impersonate` must first run `reject_identity_headers`.
+Place it at site level, outside `handle` and `route` blocks, to protect all paths.
+It runs before `forward_auth` and `request_header` by default. Inside a `route`,
+Caddy preserves source order: put rejection before authentication and any header
+changes. A guard inside a matched or grouped route does not protect later sibling
+routes; each path must have its own guard or inherit one from outside the group.
+Configurations without the required guard fail to load.
+
+The guard takes no arguments and returns 400 for client-supplied
+`X-Auth-Request-Id-Token`, `X-Auth-Request-Email`, `X-Auth-Request-Groups`,
+`Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, `Impersonate-Extra-*`,
+`X-User`, or `X-Group`, including empty values. The response names the header
+without revealing its value. `Authorization` is allowed. Custom identity header
+names outside this fixed set need their own protection.
+
+Deploy the image and the Caddyfile change together: older images do not recognize
+the directive, and this image requires it. Replace existing identity-header
+stripping with rejection, including updating tests that previously expected
+requests carrying those headers to succeed.
+
 #### Caddyfile syntax
 
 ```caddyfile
@@ -105,6 +125,7 @@ impersonate [<options>]
 With defaults (Kubernetes API impersonation):
 
 ```caddyfile
+reject_identity_headers
 route {
     forward_auth 127.0.0.1:6000 {
         uri /oauth2/auth
@@ -118,6 +139,7 @@ route {
 With custom target headers (e.g. for namespace-lister):
 
 ```caddyfile
+reject_identity_headers
 route {
     forward_auth 127.0.0.1:6000 {
         uri /oauth2/auth

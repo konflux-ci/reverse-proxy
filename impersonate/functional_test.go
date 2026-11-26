@@ -22,16 +22,16 @@ import (
 // running Caddy server, wired with forward_auth and reverse_proxy — mirroring
 // the Konflux production proxy configuration.
 //
-// Each test starts three components:
+// Request specs start three components:
 //   - authMock:       a dummy oauth2-proxy that returns auth response headers
 //   - headerCapture:  a dummy upstream backend that records incoming headers
-//   - Caddy:          loaded from a Caddyfile via the adapter with the full
-//                     forward_auth → impersonate → reverse_proxy handler chain
+//   - Caddy:          loaded from a Caddyfile with reject_identity_headers on
+//                     the site, then forward_auth, impersonate, and reverse_proxy
 //
 // The tests send HTTP requests through Caddy and assert that the backend
 // receives the correct impersonation headers. This validates that the plugin
-// integrates correctly with Caddy's forward_auth header copying and
-// request_header stripping.
+// integrates correctly with Caddy's forward_auth header copying and the
+// site-level reject_identity_headers handler.
 
 // headerCapture records all request headers and returns them as JSON.
 // It acts as a stand-in for an upstream backend (e.g. Kubernetes API).
@@ -96,28 +96,44 @@ func freePort() int {
 }
 
 func startCaddyFromCaddyfile(caddyfileContent string) {
+	Expect(loadCaddyfile(caddyfileContent)).To(Succeed(), "failed to load caddy config")
+}
+
+// loadCaddyfile adapts a Caddyfile and loads it. Callers that expect failure
+// put "admin off" in the file: Caddy binds the admin listener before handler
+// provisioning, and a failed load never becomes the current config, so
+// caddy.Stop cannot release that listener.
+func loadCaddyfile(caddyfileContent string) error {
 	adapter := caddyconfig.GetAdapter("caddyfile")
 	Expect(adapter).NotTo(BeNil(), "caddyfile adapter not registered")
 
 	jsonCfg, _, err := adapter.Adapt([]byte(caddyfileContent), nil)
 	Expect(err).NotTo(HaveOccurred(), "failed to adapt caddyfile")
 
-	Expect(caddy.Load(jsonCfg, true)).To(Succeed(), "failed to load caddy config")
 	DeferCleanup(func() { _ = caddy.Stop() })
+	return caddy.Load(jsonCfg, true)
 }
 
 func hostPort(srv *httptest.Server) string {
 	return srv.Listener.Addr().String()
 }
 
-func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
+func requestIdentityHeader(url string) (int, string) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	for _, h := range extraHeaders {
-		for k, v := range h {
-			req.Header.Set(k, v)
-		}
-	}
+	req.Header.Set("Impersonate-User", "attacker")
+
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return resp.StatusCode, string(body)
+}
+
+func httpGet(url string) *http.Response {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -128,8 +144,8 @@ func httpGet(url string, extraHeaders ...map[string]string) *http.Response {
 	return resp
 }
 
-// kubeImpersonationCaddyfile mirrors the Konflux production config: strip
-// client-supplied impersonation headers, authenticate via forward_auth,
+// kubeImpersonationCaddyfile mirrors the Konflux production config: reject
+// client-supplied identity headers, authenticate via forward_auth,
 // translate groups with the impersonate handler, then proxy to the backend.
 func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) string {
 	return fmt.Sprintf(`{
@@ -137,10 +153,8 @@ func kubeImpersonationCaddyfile(adminPort, listenPort int, authAddr, backendAddr
 }
 
 :%d {
+	reject_identity_headers
 	route {
-		request_header -Impersonate-User
-		request_header -Impersonate-Group
-
 		forward_auth %s {
 			uri /oauth2/auth
 			copy_headers X-Auth-Request-Email X-Auth-Request-Groups
@@ -162,6 +176,7 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 }
 
 :%d {
+	reject_identity_headers
 	route {
 		forward_auth %s {
 			uri /oauth2/auth
@@ -180,10 +195,10 @@ func nsListerCaddyfile(adminPort, listenPort int, authAddr, backendAddr string) 
 }
 
 var _ = Describe("Impersonate handler functional tests", func() {
-	// Each test spins up a real Caddy instance configured with the full
-	// forward_auth → impersonate → reverse_proxy chain, an auth mock
-	// standing in for oauth2-proxy, and a header-capture backend standing
-	// in for the Kubernetes API. Requests go through Caddy end-to-end.
+	// Request specs spin up a real Caddy instance with reject_identity_headers
+	// outside the route, then forward_auth, impersonate, and reverse_proxy.
+	// An auth mock stands in for oauth2-proxy, and a header-capture backend
+	// stands in for the Kubernetes API. Requests go through Caddy end-to-end.
 
 	It("sets Impersonate-User and splits groups into individual Impersonate-Group headers", func() {
 		backend, port := setupProxy("alice@example.com", "developers,platform-team", kubeImpersonationCaddyfile)
@@ -234,16 +249,134 @@ var _ = Describe("Impersonate handler functional tests", func() {
 		Expect(groups[15]).To(Equal("system:authenticated"))
 	})
 
-	It("strips malicious client-supplied Impersonate-* headers before authentication", func() {
-		backend, port := setupProxy("eve@example.com", "devs", kubeImpersonationCaddyfile)
+	It("fails to load when impersonate is used without reject_identity_headers", func() {
+		listenPort := freePort()
+		err := loadCaddyfile(fmt.Sprintf(`{
+	admin off
+}
 
-		httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port), map[string]string{
-			"Impersonate-User":  "attacker@evil.com",
-			"Impersonate-Group": "cluster-admin",
-		})
+:%d {
+	route {
+		impersonate
+		respond "ok"
+	}
+}
+`, listenPort))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same request path"))
+	})
 
-		Expect(backend.last.Get("Impersonate-User")).To(Equal("eve@example.com"))
-		Expect(backend.last.Values("Impersonate-Group")).To(Equal(
-			[]string{"devs", "system:authenticated"}))
+	It("fails to load when reject_identity_headers is only on another route", func() {
+		listenPort := freePort()
+		// The directive is on this server, but only the /other* handle runs it.
+		err := loadCaddyfile(fmt.Sprintf(`{
+	admin off
+}
+
+:%d {
+	handle /other* {
+		reject_identity_headers
+		respond "other"
+	}
+	handle {
+		route {
+			impersonate
+			respond "ok"
+		}
+	}
+}
+`, listenPort))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same request path"))
+	})
+
+	It("fails to load when impersonate precedes reject_identity_headers in a route", func() {
+		listenPort := freePort()
+		// route keeps source order, so the reject handler runs too late.
+		err := loadCaddyfile(fmt.Sprintf(`{
+	admin off
+}
+
+:%d {
+	route {
+		impersonate
+		reject_identity_headers
+		respond "ok"
+	}
+}
+`, listenPort))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("same request path"))
+	})
+
+	It("rejects a client identity header when each handle has its own reject_identity_headers", func() {
+		backend := &headerCapture{}
+		backendSrv := httptest.NewServer(backend)
+		DeferCleanup(backendSrv.Close)
+
+		listenPort := freePort()
+		adminPort := freePort()
+		backendAddr := hostPort(backendSrv)
+		startCaddyFromCaddyfile(fmt.Sprintf(`{
+	admin 127.0.0.1:%d
+}
+
+:%d {
+	handle /a* {
+		reject_identity_headers
+		route {
+			impersonate
+			reverse_proxy %s
+		}
+	}
+	handle /b* {
+		reject_identity_headers
+		route {
+			impersonate
+			reverse_proxy %s
+		}
+	}
+}
+`, adminPort, listenPort, backendAddr, backendAddr))
+
+		for _, path := range []string{"/a", "/b"} {
+			status, body := requestIdentityHeader(fmt.Sprintf("http://127.0.0.1:%d%s", listenPort, path))
+			Expect(status).To(Equal(http.StatusBadRequest))
+			Expect(body).To(ContainSubstring("Impersonate-User"))
+			Expect(body).NotTo(ContainSubstring("attacker"))
+			Expect(backend.last).To(BeNil())
+		}
+	})
+
+	It("does not return 500 when a loaded config reaches impersonate", func() {
+		// The safety net returns 500 only when reject_identity_headers did
+		// not run on this request. A config that loaded has already placed
+		// that handler upstream, so the request is proxied.
+		backend, port := setupProxy("alice@example.com", "developers", kubeImpersonationCaddyfile)
+
+		resp := httpGet(fmt.Sprintf("http://127.0.0.1:%d/test", port))
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(backend.last).NotTo(BeNil())
+		Expect(backend.last.Get("Impersonate-User")).To(Equal("alice@example.com"))
+	})
+
+	It("rejects a client identity header with 400 and does not proxy", func() {
+		backend, port := setupProxy("alice@example.com", "developers", kubeImpersonationCaddyfile)
+
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/test", port), nil)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Impersonate-User", "attacker")
+
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(string(body)).To(ContainSubstring("Impersonate-User"))
+		Expect(string(body)).NotTo(ContainSubstring("attacker"))
+		Expect(backend.last).To(BeNil())
 	})
 })
